@@ -65,7 +65,7 @@
         <key>runningsubtext</key>
         <string>Loading MSFO reports…</string>
         <key>script</key>
-        <string>python3 "$alfred_workflow_directory/list_reports.py" msfo --alfred-query "{query}"</string>
+        <string>python3 "${alfred_workflow_directory:-$PWD}/list_reports.py" msfo --alfred-query "{query}"</string>
         <key>scriptargtype</key>
         <integer>1</integer>
         <key>scriptfile</key>
@@ -106,7 +106,7 @@
         <key>runningsubtext</key>
         <string>Loading RSBU reports…</string>
         <key>script</key>
-        <string>python3 "$alfred_workflow_directory/list_reports.py" rsbu --alfred-query "{query}"</string>
+        <string>python3 "${alfred_workflow_directory:-$PWD}/list_reports.py" rsbu --alfred-query "{query}"</string>
         <key>scriptargtype</key>
         <integer>1</integer>
         <key>scriptfile</key>
@@ -137,7 +137,7 @@
         <key>language</key>
         <integer>0</integer>
         <key>script</key>
-        <string>python3 "$alfred_workflow_directory/open_report.py" --payload "{query}"</string>
+        <string>python3 "${alfred_workflow_directory:-$PWD}/open_report.py" --payload "{query}"</string>
         <key>scriptargtype</key>
         <integer>0</integer>
         <key>scriptfile</key>
