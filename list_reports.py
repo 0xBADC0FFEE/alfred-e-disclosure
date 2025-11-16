@@ -123,12 +123,12 @@ def normalize_doc_type(raw: str) -> Optional[str]:
 
 def normalize_period(text: str) -> str:
     """
-    Convert 'Отчетный период' to NPYYYY or YYYY.
+    Convert 'Отчетный период' to YYYYPN or YYYY.
 
     Examples:
-    - '2025, 9 месяцев' -> '9M2025'
-    - '2025, 6 месяцев' or '2025, полугодие' -> '1H2025'
-    - 'I квартал 2024 года' -> '1Q2024'
+    - '2025, 9 месяцев' -> '2025M9'
+    - '2025, 6 месяцев' or '2025, полугодие' -> '2025H1'
+    - 'I квартал 2024 года' -> '2024Q1'
     - '2024' -> '2024'
     """
     import re
@@ -158,21 +158,21 @@ def normalize_period(text: str) -> str:
         rom = m_q_roman.group(1)
         q = roman_map.get(rom)
         if q:
-            return f"{q}Q{year}"
+            return f"{year}Q{q}"
     m_q_arabic = re.search(r"\b(\d+)\s*кварт", lowered)
     if m_q_arabic:
         q = int(m_q_arabic.group(1))
-        return f"{q}Q{year}"
+        return f"{year}Q{q}"
 
     # Half-year.
     if "полугод" in lowered or "6 месяцев" in lowered:
-        return f"1H{year}"
+        return f"{year}H1"
 
     # N months.
     m_months = re.search(r"(\d+)\s*месяц", lowered)
     if m_months:
         n = int(m_months.group(1))
-        return f"{n}M{year}"
+        return f"{year}M{n}"
 
     return year
 
