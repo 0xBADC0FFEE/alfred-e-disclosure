@@ -51,7 +51,7 @@ class ReportPayload:
 
     @property
     def base_name(self) -> str:
-        return f"{self.period}_{self.publish_date}"
+        return f"{self.ticker.upper()}_{self.doc_type}_{self.period}_{self.publish_date}"
 
     @property
     def cache_dir(self) -> Path:
