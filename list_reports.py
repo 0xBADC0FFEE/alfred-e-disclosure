@@ -343,11 +343,12 @@ def build_script_filter_items(
     docs: List[Document], ticker: str, period_filter: Optional[str]
 ) -> dict:
     items = []
-    pf = (period_filter or "").strip()
-    pf_upper = pf.upper()
+    pf_raw = (period_filter or "").strip()
+    pf_upper = pf_raw.upper()
 
     for doc in docs:
-        if pf and doc.period.upper() != pf_upper:
+        doc_period_upper = doc.period.upper()
+        if pf_upper and not doc_period_upper.startswith(pf_upper):
             continue
 
         title = f"{doc.doc_type} - {doc.period}"
@@ -371,7 +372,7 @@ def build_script_filter_items(
         )
 
     if not items:
-        detail = "No reports match the filter" if pf else "No reports found"
+        detail = "No reports match the filter" if pf_raw else "No reports found"
         items.append(
             {
                 "title": detail,
@@ -422,12 +423,12 @@ def main(argv: Optional[List[str]] = None) -> None:
     parser.add_argument(
         "pos_period",
         nargs="?",
-        help="Optional normalized period filter (e.g. 9M2024, 1Q2024, 2024).",
+        help="Optional normalized period prefix filter (e.g. 2024, 2024Q1).",
     )
     parser.add_argument(
         "--period",
         dest="period_override",
-        help="Explicit normalized period filter.",
+        help="Explicit normalized period prefix filter.",
     )
     parser.add_argument(
         "--alfred-query",
