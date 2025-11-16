@@ -55,7 +55,7 @@ class ReportPayload:
 
     @property
     def cache_dir(self) -> Path:
-        root = Path(tempfile.gettempdir()) / "alfred-e-disclosure"
+        root = Path("/tmp") / "alfred-e-disclosure"
         return root / self.ticker.upper()
 
 
