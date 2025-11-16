@@ -22,3 +22,4 @@ chmod +x "$WORK_DIR"/save_report.py
 (cd "$WORK_DIR" && zip -rq "$OUTPUT" .)
 
 echo "Workflow bundle created at: $OUTPUT"
+open "$OUTPUT"
