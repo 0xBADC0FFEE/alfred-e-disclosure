@@ -63,6 +63,7 @@ Both scripts honor the environment variables above and reuse cached ZIP/PDF file
 2. Use the `msfo` keyword for IFRS reports or `rsbu` for Russian GAAP.
 3. Type `TICKER [PERIOD_PREFIX]`, e.g. `STSB 2024` or `MOEX 2023Q4`.
 4. Press Enter on an item to download (if needed), extract, cache, and open the PDF.
+5. Hold `⌘` (Cmd) while pressing Enter to download/extract and copy the PDF to `~/Downloads` without opening it.
 
 ## Build the Bundle
 ```bash

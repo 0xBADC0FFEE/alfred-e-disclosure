@@ -20,6 +20,16 @@
         <key>vitocloseworkflow</key>
         <false/>
       </dict>
+      <dict>
+        <key>destinationuid</key>
+        <string>D2A4BF9A-1D3C-4E28-9E2F-BB8013F6284C</string>
+        <key>modifiers</key>
+        <integer>1048576</integer>
+        <key>modifiersubtext</key>
+        <string>Save to Downloads</string>
+        <key>vitocloseworkflow</key>
+        <false/>
+      </dict>
     </array>
     <key>8F9C89F1-8ABE-4C58-A6C9-41F962A8C184</key>
     <array>
@@ -30,6 +40,16 @@
         <integer>0</integer>
         <key>modifiersubtext</key>
         <string></string>
+        <key>vitocloseworkflow</key>
+        <false/>
+      </dict>
+      <dict>
+        <key>destinationuid</key>
+        <string>D2A4BF9A-1D3C-4E28-9E2F-BB8013F6284C</string>
+        <key>modifiers</key>
+        <integer>1048576</integer>
+        <key>modifiersubtext</key>
+        <string>Save to Downloads</string>
         <key>vitocloseworkflow</key>
         <false/>
       </dict>
@@ -151,6 +171,31 @@
       <string>alfred.workflow.action.script</string>
       <key>uid</key>
       <string>E07DD2CC-0BA2-4E6D-9EAB-6F5CF66DA709</string>
+      <key>version</key>
+      <integer>1</integer>
+    </dict>
+    <dict>
+      <key>config</key>
+      <dict>
+        <key>concurrently</key>
+        <false/>
+        <key>escaping</key>
+        <integer>102</integer>
+        <key>language</key>
+        <integer>0</integer>
+        <key>script</key>
+        <string>python3 "${alfred_workflow_directory:-$PWD}/save_report.py" --payload "{query}"</string>
+        <key>scriptargtype</key>
+        <integer>0</integer>
+        <key>scriptfile</key>
+        <string></string>
+        <key>type</key>
+        <integer>0</integer>
+      </dict>
+      <key>type</key>
+      <string>alfred.workflow.action.script</string>
+      <key>uid</key>
+      <string>D2A4BF9A-1D3C-4E28-9E2F-BB8013F6284C</string>
       <key>version</key>
       <integer>1</integer>
     </dict>

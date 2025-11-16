@@ -11,11 +11,13 @@ mkdir -p "$WORK_DIR"
 
 cp "$ROOT_DIR"/list_reports.py "$WORK_DIR"/
 cp "$ROOT_DIR"/open_report.py "$WORK_DIR"/
+cp "$ROOT_DIR"/save_report.py "$WORK_DIR"/
 cp "$ROOT_DIR"/tickers.csv "$WORK_DIR"/
 cp "$ROOT_DIR"/info.plist "$WORK_DIR"/
 cp "$ROOT_DIR"/icon.png "$WORK_DIR"/
 
 chmod +x "$WORK_DIR"/list_reports.py "$WORK_DIR"/open_report.py
+chmod +x "$WORK_DIR"/save_report.py
 
 (cd "$WORK_DIR" && zip -rq "$OUTPUT" .)
 

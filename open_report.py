@@ -48,6 +48,7 @@ class ReportPayload:
     publish_date: str  # YYYY-MM-DD
     period_raw: Optional[str] = None
     doc_type_raw: Optional[str] = None
+    save_to_downloads: bool = False
 
     @property
     def base_name(self) -> str:
@@ -99,6 +100,7 @@ def load_payload(args: argparse.Namespace) -> ReportPayload:
         publish_date=data["publish_date"],
         period_raw=data.get("period_raw"),
         doc_type_raw=data.get("doc_type_raw"),
+        save_to_downloads=bool(data.get("save_to_downloads")),
     )
 
 
@@ -137,6 +139,22 @@ def safe_extract(zip_path: Path, target_dir: Path) -> None:
         archive.extractall(target_dir)
 
 
+def ensure_pdf_cached(payload: ReportPayload) -> Path:
+    cache_dir = payload.cache_dir
+    base_name = payload.base_name
+    zip_path = cache_dir / f"{base_name}.zip"
+    extract_dir = cache_dir / base_name
+    pdf_cache = cache_dir / f"{base_name}.pdf"
+
+    if not pdf_cache.exists():
+        if not zip_path.exists():
+            download_zip(payload.url, zip_path)
+        safe_extract(zip_path, extract_dir)
+        stage_pdf(extract_dir, pdf_cache)
+
+    return pdf_cache
+
+
 def stage_pdf(extract_dir: Path, final_pdf: Path) -> Path:
     if final_pdf.exists():
         return final_pdf
@@ -152,24 +170,26 @@ def open_pdf(path: Path) -> None:
     subprocess.run(["open", str(path)], check=False)
 
 
+def save_pdf_to_downloads(pdf_path: Path, payload: ReportPayload) -> Path:
+    downloads_dir = Path.home() / "Downloads"
+    downloads_dir.mkdir(parents=True, exist_ok=True)
+    destination = downloads_dir / f"{payload.base_name}.pdf"
+    shutil.copy2(pdf_path, destination)
+    return destination
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     try:
         args = parse_args(argv)
         payload = load_payload(args)
-        cache_dir = payload.cache_dir
-        base_name = payload.base_name
-        zip_path = cache_dir / f"{base_name}.zip"
-        extract_dir = cache_dir / base_name
-        pdf_cache = cache_dir / f"{base_name}.pdf"
+        pdf_cache = ensure_pdf_cached(payload)
 
-        if not pdf_cache.exists():
-            if not zip_path.exists():
-                download_zip(payload.url, zip_path)
-            safe_extract(zip_path, extract_dir)
-            stage_pdf(extract_dir, pdf_cache)
-
-        open_pdf(pdf_cache)
-        print(f"Opened {pdf_cache}")
+        if payload.save_to_downloads:
+            saved_path = save_pdf_to_downloads(pdf_cache, payload)
+            print(f"Saved {saved_path}")
+        else:
+            open_pdf(pdf_cache)
+            print(f"Opened {pdf_cache}")
         return 0
     except KeyboardInterrupt:  # pragma: no cover - manual interruption
         return 130

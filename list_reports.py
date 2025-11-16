@@ -362,12 +362,21 @@ def build_script_filter_items(
             "period_raw": doc.period_raw,
             "doc_type_raw": doc.doc_type_raw,
         }
+        cmd_payload = dict(arg_payload)
+        cmd_payload["save_to_downloads"] = True
         items.append(
             {
                 "title": title,
                 "subtitle": subtitle,
                 "arg": json.dumps(arg_payload, ensure_ascii=False),
                 "valid": True,
+                "mods": {
+                    "cmd": {
+                        "arg": json.dumps(cmd_payload, ensure_ascii=False),
+                        "subtitle": "Save to ~/Downloads",
+                        "valid": True,
+                    }
+                },
             }
         )
 
