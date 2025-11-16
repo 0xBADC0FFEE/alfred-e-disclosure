@@ -51,8 +51,7 @@ class ReportPayload:
 
     @property
     def base_name(self) -> str:
-        date_compact = self.publish_date.replace("-", "")
-        return f"{self.period}_{date_compact}"
+        return f"{self.period}_{self.publish_date}"
 
     @property
     def cache_dir(self) -> Path:
