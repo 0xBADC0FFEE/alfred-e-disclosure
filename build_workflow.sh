@@ -13,6 +13,7 @@ cp "$ROOT_DIR"/list_reports.py "$WORK_DIR"/
 cp "$ROOT_DIR"/open_report.py "$WORK_DIR"/
 cp "$ROOT_DIR"/tickers.csv "$WORK_DIR"/
 cp "$ROOT_DIR"/info.plist "$WORK_DIR"/
+cp "$ROOT_DIR"/icon.png "$WORK_DIR"/
 
 chmod +x "$WORK_DIR"/list_reports.py "$WORK_DIR"/open_report.py
 

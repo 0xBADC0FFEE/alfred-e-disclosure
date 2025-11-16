@@ -39,6 +39,8 @@
   <string>vawerv</string>
   <key>description</key>
   <string>Search and open RSBU/MSFO reports from e-disclosure.ru.</string>
+  <key>icon</key>
+  <string>icon.png</string>
   <key>disabled</key>
   <false/>
   <key>name</key>

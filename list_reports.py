@@ -352,7 +352,7 @@ def build_script_filter_items(
             continue
 
         title = f"{doc.doc_type} - {doc.period}"
-        subtitle = doc.publish_date.strftime("%d.%m.%Y")
+        subtitle = f"{doc.publish_date.strftime('%d.%m.%Y')} — {doc.doc_type_raw}"
         arg_payload = {
             "ticker": ticker.upper(),
             "url": doc.url,
