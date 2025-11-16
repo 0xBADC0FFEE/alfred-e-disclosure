@@ -67,7 +67,7 @@
         <key>script</key>
         <string>python3 "${alfred_workflow_directory:-$PWD}/list_reports.py" msfo --alfred-query "{query}"</string>
         <key>scriptargtype</key>
-        <integer>1</integer>
+        <integer>0</integer>
         <key>scriptfile</key>
         <string></string>
         <key>subtext</key>
@@ -108,7 +108,7 @@
         <key>script</key>
         <string>python3 "${alfred_workflow_directory:-$PWD}/list_reports.py" rsbu --alfred-query "{query}"</string>
         <key>scriptargtype</key>
-        <integer>1</integer>
+        <integer>0</integer>
         <key>scriptfile</key>
         <string></string>
         <key>subtext</key>
