@@ -1,0 +1,192 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>bundleid</key>
+  <string>com.vawerv.alfred.edisclosure</string>
+  <key>category</key>
+  <string>productivity</string>
+  <key>connections</key>
+  <dict>
+    <key>0B4C8D4E-8847-4B8E-95A9-6B861AF14BDA</key>
+    <array>
+      <dict>
+        <key>destinationuid</key>
+        <string>E07DD2CC-0BA2-4E6D-9EAB-6F5CF66DA709</string>
+        <key>modifiers</key>
+        <integer>0</integer>
+        <key>modifiersubtext</key>
+        <string></string>
+        <key>vitocloseworkflow</key>
+        <false/>
+      </dict>
+    </array>
+    <key>8F9C89F1-8ABE-4C58-A6C9-41F962A8C184</key>
+    <array>
+      <dict>
+        <key>destinationuid</key>
+        <string>E07DD2CC-0BA2-4E6D-9EAB-6F5CF66DA709</string>
+        <key>modifiers</key>
+        <integer>0</integer>
+        <key>modifiersubtext</key>
+        <string></string>
+        <key>vitocloseworkflow</key>
+        <false/>
+      </dict>
+    </array>
+  </dict>
+  <key>createdby</key>
+  <string>vawerv</string>
+  <key>description</key>
+  <string>Search and open RSBU/MSFO reports from e-disclosure.ru.</string>
+  <key>disabled</key>
+  <false/>
+  <key>name</key>
+  <string>e-Disclosure Reports</string>
+  <key>objects</key>
+  <array>
+    <dict>
+      <key>config</key>
+      <dict>
+        <key>alfredfiltersresults</key>
+        <false/>
+        <key>argumenttype</key>
+        <integer>1</integer>
+        <key>escaping</key>
+        <integer>102</integer>
+        <key>keyword</key>
+        <string>msfo</string>
+        <key>language</key>
+        <integer>0</integer>
+        <key>queuedelaycustom</key>
+        <integer>3</integer>
+        <key>queuedelaymode</key>
+        <integer>0</integer>
+        <key>runningsubtext</key>
+        <string>Loading MSFO reports…</string>
+        <key>script</key>
+        <string>python3 "$alfred_workflow_directory/list_reports.py" msfo --alfred-query "{query}"</string>
+        <key>scriptargtype</key>
+        <integer>1</integer>
+        <key>scriptfile</key>
+        <string></string>
+        <key>subtext</key>
+        <string>Usage: msfo TICKER [PERIOD]</string>
+        <key>title</key>
+        <string>МСФО отчёты</string>
+        <key>type</key>
+        <integer>0</integer>
+        <key>withspace</key>
+        <true/>
+      </dict>
+      <key>type</key>
+      <string>alfred.workflow.input.scriptfilter</string>
+      <key>uid</key>
+      <string>0B4C8D4E-8847-4B8E-95A9-6B861AF14BDA</string>
+      <key>version</key>
+      <integer>3</integer>
+    </dict>
+    <dict>
+      <key>config</key>
+      <dict>
+        <key>alfredfiltersresults</key>
+        <false/>
+        <key>argumenttype</key>
+        <integer>1</integer>
+        <key>escaping</key>
+        <integer>102</integer>
+        <key>keyword</key>
+        <string>rsbu</string>
+        <key>language</key>
+        <integer>0</integer>
+        <key>queuedelaycustom</key>
+        <integer>3</integer>
+        <key>queuedelaymode</key>
+        <integer>0</integer>
+        <key>runningsubtext</key>
+        <string>Loading RSBU reports…</string>
+        <key>script</key>
+        <string>python3 "$alfred_workflow_directory/list_reports.py" rsbu --alfred-query "{query}"</string>
+        <key>scriptargtype</key>
+        <integer>1</integer>
+        <key>scriptfile</key>
+        <string></string>
+        <key>subtext</key>
+        <string>Usage: rsbu TICKER [PERIOD]</string>
+        <key>title</key>
+        <string>РСБУ отчёты</string>
+        <key>type</key>
+        <integer>0</integer>
+        <key>withspace</key>
+        <true/>
+      </dict>
+      <key>type</key>
+      <string>alfred.workflow.input.scriptfilter</string>
+      <key>uid</key>
+      <string>8F9C89F1-8ABE-4C58-A6C9-41F962A8C184</string>
+      <key>version</key>
+      <integer>3</integer>
+    </dict>
+    <dict>
+      <key>config</key>
+      <dict>
+        <key>concurrently</key>
+        <false/>
+        <key>escaping</key>
+        <integer>102</integer>
+        <key>language</key>
+        <integer>0</integer>
+        <key>script</key>
+        <string>python3 "$alfred_workflow_directory/open_report.py" --payload "{query}"</string>
+        <key>scriptargtype</key>
+        <integer>0</integer>
+        <key>scriptfile</key>
+        <string></string>
+        <key>type</key>
+        <integer>0</integer>
+      </dict>
+      <key>type</key>
+      <string>alfred.workflow.action.script</string>
+      <key>uid</key>
+      <string>E07DD2CC-0BA2-4E6D-9EAB-6F5CF66DA709</string>
+      <key>version</key>
+      <integer>1</integer>
+    </dict>
+  </array>
+  <key>readme</key>
+  <string>Keywords:
+- msfo TICKER [PERIOD]
+- rsbu TICKER [PERIOD]
+
+Select a report to download, cache, and open the PDF.
+</string>
+  <key>uidata</key>
+  <dict>
+    <key>0B4C8D4E-8847-4B8E-95A9-6B861AF14BDA</key>
+    <dict>
+      <key>xpos</key>
+      <integer>100</integer>
+      <key>ypos</key>
+      <integer>0</integer>
+    </dict>
+    <key>8F9C89F1-8ABE-4C58-A6C9-41F962A8C184</key>
+    <dict>
+      <key>xpos</key>
+      <integer>100</integer>
+      <key>ypos</key>
+      <integer>200</integer>
+    </dict>
+    <key>E07DD2CC-0BA2-4E6D-9EAB-6F5CF66DA709</key>
+    <dict>
+      <key>xpos</key>
+      <integer>400</integer>
+      <key>ypos</key>
+      <integer>100</integer>
+    </dict>
+  </dict>
+  <key>version</key>
+  <integer>1</integer>
+  <key>webaddress</key>
+  <string>https://www.e-disclosure.ru/portal/</string>
+</dict>
+</plist>
