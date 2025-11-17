@@ -2,10 +2,17 @@
 """
 Download and save the selected e-disclosure report PDF to ~/Downloads.
 """
+import sys
+import os
+
+# Add bundled dependencies to path
+script_dir = os.path.dirname(os.path.abspath(__file__))
+lib_dir = os.path.join(script_dir, 'lib')
+if os.path.exists(lib_dir):
+    sys.path.insert(0, lib_dir)
 
 from __future__ import annotations
 
-import sys
 from typing import Optional
 
 from open_report import (

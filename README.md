@@ -19,13 +19,23 @@ Python helpers and an Alfred workflow for browsing and opening Russian e-disclos
 ## Requirements
 - macOS with Alfred 5 (Powerpack) for workflow usage.
 - Python 3.10+ (the scripts rely only on stdlib by default).
-- Optional: `curl_cffi` installed inside the project directory for better TLS fingerprinting:
-  ```bash
-  python3 -m venv .venv
-  source .venv/bin/activate
-  python -m pip install curl_cffi
-  ```
-  The workflow automatically uses it when found.
+
+## Development Setup
+For better TLS fingerprinting (recommended), install the optional dependency:
+
+```bash
+# Create virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Build the workflow bundle with dependencies included
+./build_workflow.sh
+```
+
+The workflow automatically uses `curl_cffi` when available, falling back to stdlib networking otherwise.
 
 ## Environment Variables
 - `EDISCLOSURE_COOKIE` – paste cookies from an authenticated browser session if the site serves CAPTCHA pages.

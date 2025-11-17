@@ -16,6 +16,10 @@ cp "$ROOT_DIR"/tickers.csv "$WORK_DIR"/
 cp "$ROOT_DIR"/info.plist "$WORK_DIR"/
 cp "$ROOT_DIR"/icon.png "$WORK_DIR"/
 
+# Copy virtual environment dependencies
+mkdir -p "$WORK_DIR"/lib
+cp -r "$ROOT_DIR"/.venv/lib/python*/site-packages/* "$WORK_DIR"/lib/
+
 chmod +x "$WORK_DIR"/list_reports.py "$WORK_DIR"/open_report.py
 chmod +x "$WORK_DIR"/save_report.py
 
