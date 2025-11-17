@@ -2,6 +2,8 @@
 """
 Download and save the selected e-disclosure report PDF to ~/Downloads.
 """
+from __future__ import annotations
+
 import sys
 import os
 
@@ -10,8 +12,6 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 lib_dir = os.path.join(script_dir, 'lib')
 if os.path.exists(lib_dir):
     sys.path.insert(0, lib_dir)
-
-from __future__ import annotations
 
 from typing import Optional
 
