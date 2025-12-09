@@ -231,6 +231,32 @@ def load_company_id(ticker: str) -> str:
     sys.exit(1)
 
 
+def load_tickers() -> List[Tuple[str, str]]:
+    """Load all tickers and their IDs from CSV."""
+    csv_path = Path(__file__).resolve().parent / "tickers.csv"
+    if not csv_path.is_file():
+        print(f"Ticker mapping file not found: {csv_path}", file=sys.stderr)
+        sys.exit(1)
+
+    tickers = []
+    with csv_path.open(newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            ticker = row.get("ticker", "").strip()
+            company_id = row.get("id", "").strip()
+            if ticker and company_id:
+                tickers.append((ticker.upper(), company_id))
+    return tickers
+
+
+def search_tickers(query: str, all_tickers: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
+    """Search tickers that start with the query (case insensitive)."""
+    if not query:
+        return []
+    query_up = query.upper()
+    return [ticker for ticker in all_tickers if ticker[0].startswith(query_up)]
+
+
 def fetch_table_html(company_id: str, doc_page_type: int) -> str:
     url = f"{BASE_URL}files.aspx?id={company_id}&type={doc_page_type}"
     # e-disclosure may return anti-bot/captcha pages to non-browser clients.
@@ -400,6 +426,34 @@ def build_script_filter_items(
     return {"items": items}
 
 
+def build_autocomplete_items(matching_tickers: List[Tuple[str, str]], command: str) -> dict:
+    """Build script filter items for ticker autocomplete."""
+    items = []
+
+    for ticker, company_id in matching_tickers[:10]:  # Limit to 10 suggestions
+        items.append(
+            {
+                "title": ticker,
+                "subtitle": f"Search {command.upper()} reports for {ticker}",
+                "arg": f"{ticker} ",  # Add space to continue typing period filter
+                "autocomplete": ticker,
+                "valid": True,
+                "match": ticker.lower(),  # For Alfred's built-in filtering
+            }
+        )
+
+    if not items:
+        items.append(
+            {
+                "title": "No matching tickers found",
+                "subtitle": "Try a different ticker prefix",
+                "valid": False,
+            }
+        )
+
+    return {"items": items}
+
+
 def parse_query(text: str) -> Tuple[Optional[str], Optional[str]]:
     if not text:
         return None, None
@@ -462,6 +516,23 @@ def main(argv: Optional[List[str]] = None) -> None:
         ticker = q_ticker or ticker
         period = q_period or period
 
+    # Load all tickers for autocomplete
+    all_tickers = load_tickers()
+
+    # Determine if we should show autocomplete or reports
+    if ticker and not period:
+        # Check if ticker is complete (has space after it in query or is exact match)
+        query_has_space = args.alfred_query and " " in args.alfred_query.strip()
+        ticker_is_complete = any(t[0] == ticker.upper() for t in all_tickers)
+
+        if not query_has_space and not ticker_is_complete:
+            # Show autocomplete suggestions
+            matching_tickers = search_tickers(ticker, all_tickers)
+            data = build_autocomplete_items(matching_tickers, args.command)
+            json.dump(data, sys.stdout, ensure_ascii=False, indent=2)
+            return
+
+    # Show reports (existing logic)
     if not ticker:
         emit_error("Ticker is required", "Usage: msfo TICKER [PERIOD]")
         return
@@ -481,3 +552,4 @@ def main(argv: Optional[List[str]] = None) -> None:
 
 if __name__ == "__main__":
     main()
+
