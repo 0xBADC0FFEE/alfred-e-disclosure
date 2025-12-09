@@ -223,16 +223,16 @@ def load_company_id(ticker: str) -> str:
     with csv_path.open(newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            if row.get("ticker", "").upper() == ticker_up:
-                company_id = row.get("id")
+            if row.get("Ticker", "").upper() == ticker_up:
+                company_id = row.get("EDID")
                 if company_id:
                     return company_id
     print(f"Unknown ticker: {ticker}", file=sys.stderr)
     sys.exit(1)
 
 
-def load_tickers() -> List[Tuple[str, str]]:
-    """Load all tickers and their IDs from CSV."""
+def load_tickers() -> List[Tuple[str, str, str]]:
+    """Load all tickers, their EDIDs, and company names from CSV."""
     csv_path = Path(__file__).resolve().parent / "tickers.csv"
     if not csv_path.is_file():
         print(f"Ticker mapping file not found: {csv_path}", file=sys.stderr)
@@ -242,14 +242,15 @@ def load_tickers() -> List[Tuple[str, str]]:
     with csv_path.open(newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            ticker = row.get("ticker", "").strip()
-            company_id = row.get("id", "").strip()
+            ticker = row.get("Ticker", "").strip()
+            company_id = row.get("EDID", "").strip()
+            company_name = row.get("Name", "").strip()
             if ticker and company_id:
-                tickers.append((ticker.upper(), company_id))
+                tickers.append((ticker.upper(), company_id, company_name))
     return tickers
 
 
-def search_tickers(query: str, all_tickers: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
+def search_tickers(query: str, all_tickers: List[Tuple[str, str, str]]) -> List[Tuple[str, str, str]]:
     """Search tickers that start with the query (case insensitive)."""
     if not query:
         return []
@@ -426,18 +427,19 @@ def build_script_filter_items(
     return {"items": items}
 
 
-def build_autocomplete_items(matching_tickers: List[Tuple[str, str]], command: str) -> dict:
+def build_autocomplete_items(matching_tickers: List[Tuple[str, str, str]], command: str) -> dict:
     """Build script filter items for ticker autocomplete."""
     items = []
 
-    for ticker, company_id in matching_tickers[:10]:  # Limit to 10 suggestions
+    for ticker, company_id, company_name in matching_tickers[:10]:  # Limit to 10 suggestions
+        title = f"{ticker} - {company_name}" if company_name else ticker
         items.append(
             {
-                "title": ticker,
+                "title": title,
                 "subtitle": f"Search {command.upper()} reports for {ticker}",
                 "arg": f"{ticker} ",  # Add space to continue typing period filter
                 "autocomplete": ticker,
-                "valid": True,
+                "valid": False,
                 "match": ticker.lower(),  # For Alfred's built-in filtering
             }
         )
