@@ -6,7 +6,7 @@ Python helpers and an Alfred workflow for browsing and opening Russian e-disclos
 - Maps short tickers to the portal company IDs stored in `tickers.csv`.
 - Normalizes verbose period names (`I квартал 2024` → `2024Q1`, `2024, 9 месяцев` → `2024M9`).
 - Shows publish dates and document type badges (`МСФО` / `РСБУ`) sorted by newest first.
-- Caches downloaded ZIP archives under `~/tmp/alfred-e-disclosure/<TICKER>` so the same PDF opens instantly next time.
+- Caches downloaded files under `~/tmp/alfred-e-disclosure/<TICKER>` and handles `zip`/`7z`/`rar`/direct `pdf`.
 - Falls back to stdlib networking but can impersonate Chrome when `curl_cffi` is available.
 
 ## Repository Layout
@@ -19,6 +19,7 @@ Python helpers and an Alfred workflow for browsing and opening Russian e-disclos
 ## Requirements
 - macOS with Alfred 5 (Powerpack) for workflow usage.
 - Python 3.10+ (the scripts rely only on stdlib by default).
+- For `rar`: `bsdtar` (default on macOS) or `unrar`.
 
 ## Development Setup
 For better TLS fingerprinting (recommended), install the optional dependency:
@@ -66,13 +67,18 @@ When invoked from Alfred you normally pass the entire payload:
 python3 open_report.py --payload '{"ticker":"STSB","url":"...","period":"2024Q1","doc_type":"МСФО","publish_date":"2024-05-15"}'
 ```
 
-Both scripts honor the environment variables above and reuse cached ZIP/PDF files.
+Both scripts honor the environment variables above and reuse cached archive/PDF files.
+
+Debug detected file type during open/download flow:
+```bash
+EDISCLOSURE_DEBUG=1 python3 open_report.py --payload '...'
+```
 
 ## Alfred Workflow
 1. Import `dist/alfred-e-disclosure.alfredworkflow` into Alfred.
 2. Use the `msfo` keyword for IFRS reports or `rsbu` for Russian GAAP.
 3. Type `TICKER [PERIOD_PREFIX]`, e.g. `STSB 2024` or `MOEX 2023Q4`.
-4. Press Enter on an item to download (if needed), extract, cache, and open the PDF.
+4. Press Enter on an item to download (if needed), extract/cache, and open the PDF.
 5. Hold `⌘` (Cmd) while pressing Enter to download/extract and copy the PDF to `~/Downloads` without opening it.
 
 ## Build the Bundle
@@ -86,4 +92,3 @@ The script copies the Python sources, `tickers.csv`, and `info.plist` into `dist
 - Run `python3 list_reports.py msfo STSB | jq` to confirm listing works.
 - Select any emitted item, copy its JSON payload, and feed it to `open_report.py --payload ...` to ensure downloads and caching succeed.
 - If e-disclosure responds with bot protection, grab cookies from your browser’s dev tools and set `EDISCLOSURE_COOKIE` before re-running the scripts.
-

@@ -18,7 +18,6 @@ import json
 import shutil
 import subprocess
 import sys
-import tempfile
 import urllib.request
 import zipfile
 from dataclasses import dataclass
@@ -44,6 +43,7 @@ HEADERS = {
 }
 
 _cf_session: Optional["cf_requests.Session"] = None  # type: ignore[name-defined]
+DEBUG = os.getenv("EDISCLOSURE_DEBUG", "").lower() in {"1", "true", "yes", "on"}
 
 
 @dataclass
@@ -82,6 +82,11 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def debug_log(message: str) -> None:
+    if DEBUG:
+        print(f"[open_report.py] {message}", file=sys.stderr)
+
+
 def load_payload(args: argparse.Namespace) -> ReportPayload:
     data: Dict[str, str]
     if args.payload:
@@ -111,7 +116,7 @@ def load_payload(args: argparse.Namespace) -> ReportPayload:
     )
 
 
-def download_zip(url: str, dest: Path) -> None:
+def download_file(url: str, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     cookie = os.getenv("EDISCLOSURE_COOKIE")
     headers = dict(HEADERS)
@@ -134,30 +139,163 @@ def download_zip(url: str, dest: Path) -> None:
 
 
 def safe_extract(zip_path: Path, target_dir: Path) -> None:
-    if target_dir.exists():
+    safe_extract_archive(zip_path, target_dir, "zip")
+
+
+def _assert_within(base_dir: Path, candidate: Path) -> None:
+    try:
+        candidate.resolve().relative_to(base_dir.resolve())
+    except ValueError:
+        raise RuntimeError(f"Unsafe extracted path: {candidate}")
+
+
+def _check_extracted_paths(target_dir: Path) -> None:
+    for path in target_dir.rglob("*"):
+        _assert_within(target_dir, path)
+
+
+def _has_extracted_content(target_dir: Path) -> bool:
+    return target_dir.exists() and any(target_dir.iterdir())
+
+
+def detect_file_type(path: Path) -> str:
+    with path.open("rb") as fh:
+        header = fh.read(8)
+
+    if header.startswith(b"%PDF-"):
+        return "pdf"
+    if header.startswith((b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")):
+        return "zip"
+    if header.startswith(b"7z\xBC\xAF\x27\x1C"):
+        return "7z"
+    if header.startswith((b"Rar!\x1A\x07\x00", b"Rar!\x1A\x07\x01\x00")):
+        return "rar"
+
+    suffix_map = {
+        ".pdf": "pdf",
+        ".zip": "zip",
+        ".7z": "7z",
+        ".rar": "rar",
+    }
+    file_type = suffix_map.get(path.suffix.lower())
+    if file_type:
+        return file_type
+    raise RuntimeError(f"Unsupported file type: {path}")
+
+
+def _extract_zip(archive_path: Path, target_dir: Path) -> None:
+    if _has_extracted_content(target_dir):
         return
     target_dir.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(zip_path) as archive:
+    with zipfile.ZipFile(archive_path) as archive:
         for member in archive.infolist():
             member_path = target_dir / member.filename
-            resolved = member_path.resolve()
-            if not str(resolved).startswith(str(target_dir.resolve())):
+            try:
+                member_path.resolve().relative_to(target_dir.resolve())
+            except ValueError:
                 raise RuntimeError(f"Unsafe entry in archive: {member.filename}")
         archive.extractall(target_dir)
+    _check_extracted_paths(target_dir)
+
+
+def _extract_7z(archive_path: Path, target_dir: Path) -> None:
+    if _has_extracted_content(target_dir):
+        return
+    target_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        import py7zr  # type: ignore[import-not-found]
+    except ImportError as exc:
+        raise RuntimeError("Missing dependency: py7zr. Install requirements.txt") from exc
+
+    with py7zr.SevenZipFile(archive_path, mode="r") as archive:
+        archive.extractall(path=target_dir)
+    _check_extracted_paths(target_dir)
+
+
+def _extract_rar(archive_path: Path, target_dir: Path) -> None:
+    if _has_extracted_content(target_dir):
+        return
+    target_dir.mkdir(parents=True, exist_ok=True)
+    errors: list[str] = []
+
+    bsdtar = shutil.which("bsdtar")
+    if bsdtar:
+        result = subprocess.run(
+            [bsdtar, "-xf", str(archive_path), "-C", str(target_dir)],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            _check_extracted_paths(target_dir)
+            return
+        errors.append(f"bsdtar failed: {(result.stderr or result.stdout).strip()}")
+    else:
+        errors.append("bsdtar not found")
+
+    unrar = shutil.which("unrar")
+    if unrar:
+        result = subprocess.run(
+            [unrar, "x", "-o+", "-idq", str(archive_path), str(target_dir) + "/"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            _check_extracted_paths(target_dir)
+            return
+        errors.append(f"unrar failed: {(result.stderr or result.stdout).strip()}")
+    else:
+        errors.append("unrar not found")
+
+    raise RuntimeError(
+        f"Failed to extract RAR: {archive_path}. Need `bsdtar` or `unrar`. "
+        f"Details: {'; '.join(errors)}"
+    )
+
+
+def safe_extract_archive(archive_path: Path, target_dir: Path, archive_type: str) -> None:
+    if archive_type == "zip":
+        _extract_zip(archive_path, target_dir)
+        return
+    if archive_type == "7z":
+        _extract_7z(archive_path, target_dir)
+        return
+    if archive_type == "rar":
+        _extract_rar(archive_path, target_dir)
+        return
+    raise RuntimeError(f"Unsupported archive type: {archive_type}")
 
 
 def ensure_pdf_cached(payload: ReportPayload) -> Path:
     cache_dir = payload.cache_dir
     base_name = payload.base_name
-    zip_path = cache_dir / f"{base_name}.zip"
     extract_dir = cache_dir / base_name
     pdf_cache = cache_dir / f"{base_name}.pdf"
+    candidates = [
+        cache_dir / f"{base_name}.zip",
+        cache_dir / f"{base_name}.7z",
+        cache_dir / f"{base_name}.rar",
+        cache_dir / f"{base_name}.pdf",
+        cache_dir / f"{base_name}.bin",
+    ]
+    file_path = next((p for p in candidates if p.exists()), cache_dir / f"{base_name}.bin")
 
     if not pdf_cache.exists():
-        if not zip_path.exists():
-            download_zip(payload.url, zip_path)
-        safe_extract(zip_path, extract_dir)
-        stage_pdf(extract_dir, pdf_cache)
+        if not file_path.exists():
+            download_file(payload.url, file_path)
+
+        file_type = detect_file_type(file_path)
+        debug_log(f"{payload.ticker.upper()} {payload.period} format={file_type} source={payload.url}")
+        final_path = cache_dir / f"{base_name}.{file_type}"
+        if file_path != final_path and not final_path.exists():
+            file_path.rename(final_path)
+            file_path = final_path
+
+        if file_type == "pdf":
+            pdf_cache.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(file_path, pdf_cache)
+        else:
+            safe_extract_archive(file_path, extract_dir, file_type)
+            stage_pdf(extract_dir, pdf_cache)
 
     return pdf_cache
 
@@ -165,7 +303,10 @@ def ensure_pdf_cached(payload: ReportPayload) -> Path:
 def stage_pdf(extract_dir: Path, final_pdf: Path) -> Path:
     if final_pdf.exists():
         return final_pdf
-    pdfs = sorted(extract_dir.rglob("*.pdf"))
+    pdfs = sorted(
+        path for path in extract_dir.rglob("*")
+        if path.is_file() and path.suffix.lower() == ".pdf"
+    )
     if not pdfs:
         raise FileNotFoundError("Archive does not contain PDF files.")
     final_pdf.parent.mkdir(parents=True, exist_ok=True)
@@ -207,4 +348,3 @@ def main(argv: Optional[list[str]] = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-
