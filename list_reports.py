@@ -29,9 +29,54 @@ except ImportError:  # pragma: no cover - optional dependency
 
 _cf_session: Optional["cf_requests.Session"] = None  # type: ignore[name-defined]
 _warned_no_cf = False
+_warned_stealthy_missing = False
 
 
 BASE_URL = "https://www.e-disclosure.ru/portal/"
+
+
+def _is_challenge_page(html: str) -> bool:
+    """ServicePipe Cybert anti-bot challenge — spinner page instead of real HTML.
+
+    Real e-disclosure pages embed ServicePipe tracking JS too, so detect by the
+    spinner div and absence of the actual files-table marker.
+    """
+    if not html:
+        return True
+    if "files-table" in html:
+        return False
+    lowered = html.lower()
+    return "id_spinner" in lowered or len(html) < 5000
+
+
+def _log(msg: str) -> None:
+    print(f"[list_reports] {msg}", file=sys.stderr, flush=True)
+
+
+def _stealthy_fetch_html(url: str) -> Optional[str]:
+    """Fallback fetch through Patchright-backed StealthyFetcher (lazy import)."""
+    global _warned_stealthy_missing
+    _log(f"stealthy import…")
+    try:
+        from scrapling.fetchers import StealthyFetcher  # type: ignore[import-not-found]
+    except ImportError:
+        if not _warned_stealthy_missing:
+            _log("scrapling NOT installed — install: pip install 'scrapling[fetchers]' && scrapling install")
+            _warned_stealthy_missing = True
+        return None
+    _log(f"stealthy fetch {url}")
+    page = StealthyFetcher.fetch(
+        url,
+        headless=True,
+        network_idle=True,
+        wait=12000,
+        humanize=True,
+        spoof_fingerprint=True,
+        timeout=90000,
+    )
+    html = getattr(page, "html_content", None) or getattr(page, "body", None) or ""
+    _log(f"stealthy done ({len(html)} bytes)")
+    return html
 
 
 @dataclass
@@ -294,6 +339,8 @@ def fetch_table_html(company_id: str, doc_page_type: int) -> str:
     if cookie:
         headers["Cookie"] = cookie
 
+    html: Optional[str] = None
+    _log(f"GET {url}")
     if cf_requests is not None:
         global _cf_session
         if _cf_session is None:
@@ -301,21 +348,30 @@ def fetch_table_html(company_id: str, doc_page_type: int) -> str:
             _cf_session = cf_requests.Session(impersonate=impersonate)
         response = _cf_session.get(url, headers=headers, timeout=30)
         response.raise_for_status()
-        return response.text
+        html = response.text
+        _log(f"curl_cffi {response.status_code} ({len(html)} bytes)")
+    else:
+        global _warned_no_cf
+        if not _warned_no_cf:
+            print(
+                "curl_cffi is not installed; falling back to urllib which may trigger anti-bot pages.\n"
+                "Install it via `python3 -m pip install --user --break-system-packages curl_cffi` "
+                "for Chrome-like TLS fingerprinting.",
+                file=sys.stderr,
+            )
+            _warned_no_cf = True
 
-    global _warned_no_cf
-    if not _warned_no_cf:
-        print(
-            "curl_cffi is not installed; falling back to urllib which may trigger anti-bot pages.\n"
-            "Install it via `python3 -m pip install --user --break-system-packages curl_cffi` "
-            "for Chrome-like TLS fingerprinting.",
-            file=sys.stderr,
-        )
-        _warned_no_cf = True
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req) as resp:
+            html = decode_http_body(resp)
 
-    req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req) as resp:
-        return decode_http_body(resp)
+    if _is_challenge_page(html):
+        _log("challenge detected → stealthy fallback")
+        stealthy_html = _stealthy_fetch_html(url)
+        if stealthy_html and not _is_challenge_page(stealthy_html):
+            return stealthy_html
+        _log("stealthy fallback failed; returning original html")
+    return html
 
 
 def collect_documents(company_id: str, wanted_compact_type: str) -> List[Document]:
@@ -334,9 +390,11 @@ def collect_documents(company_id: str, wanted_compact_type: str) -> List[Documen
         page_types = (3,)
 
     for page_type in page_types:
+        _log(f"collect type={page_type} id={company_id}")
         html = fetch_table_html(company_id, page_type)
         parser = FilesTableParser()
         parser.feed(html)
+        _log(f"parsed type={page_type}: {len(parser.rows)} rows")
 
         for row in parser.rows:
             raw_type = row.get("type", "").strip()
@@ -543,7 +601,9 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     try:
         company_id = load_company_id(ticker)
+        _log(f"start {args.command} ticker={ticker} edid={company_id}")
         docs = collect_documents(company_id, compact_type)
+        _log(f"done: {len(docs)} docs")
     except Exception as exc:  # pragma: no cover - network/filesystem errors
         emit_error("Failed to fetch reports", str(exc))
         return

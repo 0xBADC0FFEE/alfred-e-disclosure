@@ -8,6 +8,7 @@ Python helpers and an Alfred workflow for browsing and opening Russian e-disclos
 - Shows publish dates and document type badges (`МСФО` / `РСБУ`) sorted by newest first.
 - Caches downloaded files under `~/tmp/alfred-e-disclosure/<TICKER>` and handles `zip`/`7z`/`rar`/direct `pdf`.
 - Falls back to stdlib networking but can impersonate Chrome when `curl_cffi` is available.
+- Auto-fallback на `Scrapling StealthyFetcher` (Patchright) при ServicePipe challenge на `e-disclosure.ru`.
 
 ## Repository Layout
 - `list_reports.py` – Alfred Script Filter / CLI that prints report candidates as JSON.
@@ -31,6 +32,9 @@ source .venv/bin/activate
 
 # Install dependencies
 pip install -r requirements.txt
+
+# One-time: install Patchright browser binaries used by StealthyFetcher fallback
+scrapling install
 
 # Build the workflow bundle with dependencies included
 ./build_workflow.sh
