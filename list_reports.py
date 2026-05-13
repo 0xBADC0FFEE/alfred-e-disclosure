@@ -12,9 +12,11 @@ import argparse
 import csv
 import gzip
 import json
+import threading
 import urllib.request
 import urllib.response
 import zlib
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from html.parser import HTMLParser
@@ -27,7 +29,7 @@ try:
 except ImportError:  # pragma: no cover - optional dependency
     cf_requests = None
 
-_cf_session: Optional["cf_requests.Session"] = None  # type: ignore[name-defined]
+_cf_local = threading.local()  # per-thread cf_requests.Session
 _warned_no_cf = False
 _warned_stealthy_missing = False
 
@@ -340,16 +342,17 @@ def fetch_table_html(company_id: str, doc_page_type: int) -> str:
         headers["Cookie"] = cookie
 
     html: Optional[str] = None
-    _log(f"GET {url}")
+    _log(f"type={doc_page_type} GET {url}")
     if cf_requests is not None:
-        global _cf_session
-        if _cf_session is None:
+        session = getattr(_cf_local, "session", None)
+        if session is None:
             impersonate = os.getenv("EDISCLOSURE_IMPERSONATE", "chrome124")
-            _cf_session = cf_requests.Session(impersonate=impersonate)
-        response = _cf_session.get(url, headers=headers, timeout=30)
+            session = cf_requests.Session(impersonate=impersonate)
+            _cf_local.session = session
+        response = session.get(url, headers=headers, timeout=30)
         response.raise_for_status()
         html = response.text
-        _log(f"curl_cffi {response.status_code} ({len(html)} bytes)")
+        _log(f"type={doc_page_type} curl_cffi {response.status_code} ({len(html)} bytes)")
     else:
         global _warned_no_cf
         if not _warned_no_cf:
@@ -366,11 +369,11 @@ def fetch_table_html(company_id: str, doc_page_type: int) -> str:
             html = decode_http_body(resp)
 
     if _is_challenge_page(html):
-        _log("challenge detected → stealthy fallback")
+        _log(f"type={doc_page_type} challenge detected → stealthy fallback")
         stealthy_html = _stealthy_fetch_html(url)
         if stealthy_html and not _is_challenge_page(stealthy_html):
             return stealthy_html
-        _log("stealthy fallback failed; returning original html")
+        _log(f"type={doc_page_type} stealthy fallback failed; returning original html")
     return html
 
 
@@ -389,9 +392,14 @@ def collect_documents(company_id: str, wanted_compact_type: str) -> List[Documen
     else:
         page_types = (3,)
 
-    for page_type in page_types:
-        _log(f"collect type={page_type} id={company_id}")
-        html = fetch_table_html(company_id, page_type)
+    _log(f"collect id={company_id} types={page_types}")
+    if len(page_types) > 1:
+        with ThreadPoolExecutor(max_workers=len(page_types)) as executor:
+            htmls = list(executor.map(lambda t: fetch_table_html(company_id, t), page_types))
+    else:
+        htmls = [fetch_table_html(company_id, page_types[0])]
+
+    for page_type, html in zip(page_types, htmls):
         parser = FilesTableParser()
         parser.feed(html)
         _log(f"parsed type={page_type}: {len(parser.rows)} rows")
