@@ -84,6 +84,8 @@
         <integer>3</integer>
         <key>queuedelaymode</key>
         <integer>0</integer>
+        <key>queuemode</key>
+        <integer>2</integer>
         <key>runningsubtext</key>
         <string>Loading MSFO reports…</string>
         <key>script</key>
@@ -125,6 +127,8 @@
         <integer>3</integer>
         <key>queuedelaymode</key>
         <integer>0</integer>
+        <key>queuemode</key>
+        <integer>2</integer>
         <key>runningsubtext</key>
         <string>Loading RSBU reports…</string>
         <key>script</key>
