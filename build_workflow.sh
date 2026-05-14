@@ -13,6 +13,7 @@ cp "$ROOT_DIR"/list_reports.py "$WORK_DIR"/
 cp "$ROOT_DIR"/open_report.py "$WORK_DIR"/
 cp "$ROOT_DIR"/save_report.py "$WORK_DIR"/
 cp "$ROOT_DIR"/report_cache.py "$WORK_DIR"/
+cp "$ROOT_DIR"/refresh_lock.py "$WORK_DIR"/
 cp "$ROOT_DIR"/relative_time_ru.py "$WORK_DIR"/
 cp "$ROOT_DIR"/tickers.csv "$WORK_DIR"/
 cp "$ROOT_DIR"/info.plist "$WORK_DIR"/
