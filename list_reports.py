@@ -24,6 +24,9 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 from urllib.parse import urljoin
 
+import relative_time_ru
+import report_cache
+
 try:
     from curl_cffi import requests as cf_requests  # type: ignore[import-not-found]
 except ImportError:  # pragma: no cover - optional dependency
@@ -439,44 +442,80 @@ def collect_documents(company_id: str, wanted_compact_type: str) -> List[Documen
     return docs
 
 
+def docs_to_cache_items(docs: List[Document]) -> List[dict]:
+    return [
+        {
+            "doc_type_raw": d.doc_type_raw,
+            "doc_type": d.doc_type,
+            "period_raw": d.period_raw,
+            "period": d.period,
+            "publish_date": d.publish_date.isoformat(),
+            "url": d.url,
+        }
+        for d in docs
+    ]
+
+
 def build_script_filter_items(
-    docs: List[Document], ticker: str, period_filter: Optional[str]
+    cache_items: List[dict],
+    ticker: str,
+    period_filter: Optional[str],
+    cache_age_label: Optional[str],
 ) -> dict:
     items = []
     pf_raw = (period_filter or "").strip()
     pf_upper = pf_raw.upper()
 
-    for doc in docs:
-        doc_period_upper = doc.period.upper()
-        if pf_upper and not doc_period_upper.startswith(pf_upper):
+    for ci in cache_items:
+        period = ci.get("period", "")
+        if pf_upper and not period.upper().startswith(pf_upper):
             continue
 
-        title = f"{doc.doc_type} - {doc.period}"
-        subtitle = f"{doc.publish_date.strftime('%d.%m.%Y')} — {doc.doc_type_raw}"
+        doc_type = ci.get("doc_type", "")
+        doc_type_raw = ci.get("doc_type_raw", "")
+        url = ci.get("url", "")
+        publish_iso = ci.get("publish_date", "")
+        try:
+            pub_dt = datetime.fromisoformat(publish_iso)
+            pub_date_str = pub_dt.strftime("%d.%m.%Y")
+            pub_iso_date = pub_dt.date().isoformat()
+        except ValueError:
+            pub_date_str = publish_iso
+            pub_iso_date = publish_iso
+
+        title = f"{doc_type} - {period}"
+        subtitle = f"{pub_date_str} — {doc_type_raw}"
         arg_payload = {
             "ticker": ticker.upper(),
-            "url": doc.url,
-            "period": doc.period,
-            "doc_type": doc.doc_type,
-            "publish_date": doc.publish_date.date().isoformat(),
-            "period_raw": doc.period_raw,
-            "doc_type_raw": doc.doc_type_raw,
+            "url": url,
+            "period": period,
+            "doc_type": doc_type,
+            "publish_date": pub_iso_date,
+            "period_raw": ci.get("period_raw", ""),
+            "doc_type_raw": doc_type_raw,
         }
         cmd_payload = dict(arg_payload)
         cmd_payload["save_to_downloads"] = True
+        mods = {
+            "cmd": {
+                "arg": json.dumps(cmd_payload, ensure_ascii=False),
+                "subtitle": "Save to ~/Downloads",
+                "valid": True,
+            }
+        }
+        if cache_age_label:
+            mods["alt"] = {
+                "arg": json.dumps(arg_payload, ensure_ascii=False),
+                "subtitle": f"↻ Обновить · Кэш: {cache_age_label}",
+                "valid": True,
+            }
         items.append(
             {
                 "title": title,
                 "subtitle": subtitle,
                 "arg": json.dumps(arg_payload, ensure_ascii=False),
                 "valid": True,
-                "mods": {
-                    "cmd": {
-                        "arg": json.dumps(cmd_payload, ensure_ascii=False),
-                        "subtitle": "Save to ~/Downloads",
-                        "valid": True,
-                    }
-                },
+                "mods": mods,
             }
         )
 
@@ -607,16 +646,37 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     compact_type = "МСФО" if args.command == "msfo" else "РСБУ"
 
-    try:
-        company_id = load_company_id(ticker)
-        _log(f"start {args.command} ticker={ticker} edid={company_id}")
-        docs = collect_documents(company_id, compact_type)
-        _log(f"done: {len(docs)} docs")
-    except Exception as exc:  # pragma: no cover - network/filesystem errors
-        emit_error("Failed to fetch reports", str(exc))
-        return
+    cache_items: Optional[List[dict]] = None
+    cache_age_label: Optional[str] = None
 
-    data = build_script_filter_items(docs, ticker, period)
+    env = report_cache.read(ticker, compact_type)
+    if env is not None:
+        items = env.get("items")
+        fetched_at = report_cache.fetched_at(env)
+        if isinstance(items, list) and fetched_at is not None:
+            cache_items = items
+            cache_age_label = relative_time_ru.format(datetime.now(), fetched_at)
+            _log(f"cache hit {ticker}/{compact_type} age={cache_age_label} items={len(items)}")
+
+    if cache_items is None:
+        try:
+            company_id = load_company_id(ticker)
+            _log(f"start {args.command} ticker={ticker} edid={company_id}")
+            docs = collect_documents(company_id, compact_type)
+            _log(f"done: {len(docs)} docs")
+        except Exception as exc:  # pragma: no cover - network/filesystem errors
+            emit_error("Failed to fetch reports", str(exc))
+            return
+
+        cache_items = docs_to_cache_items(docs)
+        now = datetime.now()
+        try:
+            report_cache.write(ticker, compact_type, cache_items, now)
+        except OSError as exc:  # pragma: no cover - disk errors
+            _log(f"cache write failed: {exc}")
+        cache_age_label = relative_time_ru.format(now, now)
+
+    data = build_script_filter_items(cache_items, ticker, period, cache_age_label)
     json.dump(data, sys.stdout, ensure_ascii=False, indent=2)
 
 
