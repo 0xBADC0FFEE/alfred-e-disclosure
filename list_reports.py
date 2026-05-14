@@ -741,8 +741,11 @@ def _run_refresh_worker(args: argparse.Namespace) -> None:
         _log(f"refresh worker pid={pid} {ticker}/{compact_type} edid={company_id}")
         docs = collect_documents(company_id, compact_type)
         cache_items = docs_to_cache_items(docs)
-        report_cache.write(ticker, compact_type, cache_items, datetime.now())
-        _log(f"refresh worker pid={pid} wrote {len(cache_items)} items")
+        if not cache_items:
+            _log(f"refresh worker pid={pid} empty result, skipping cache write")
+        else:
+            report_cache.write(ticker, compact_type, cache_items, datetime.now())
+            _log(f"refresh worker pid={pid} wrote {len(cache_items)} items")
     except Exception as exc:  # pragma: no cover - worker errors
         _log(f"refresh worker pid={pid} failed: {exc}")
     finally:
