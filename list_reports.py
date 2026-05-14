@@ -531,23 +531,30 @@ def build_script_filter_items(
 
     if not items:
         detail = "No reports match the filter" if pf_raw else "No reports found"
-        placeholder = {
-            "title": detail,
-            "subtitle": f"{ticker.upper()} — try another period or command.",
-            "valid": False,
-        }
         if doc_type:
             refresh_payload = {
                 "ticker": ticker.upper(),
                 "doc_type": doc_type,
                 "force_refresh": True,
             }
-            placeholder["mods"] = {
-                "alt": {
-                    "arg": json.dumps(refresh_payload, ensure_ascii=False),
-                    "subtitle": "↻ Сбросить кэш и попробовать снова",
-                    "valid": True,
-                }
+            placeholder = {
+                "title": detail,
+                "subtitle": f"{ticker.upper()} — ↵ или ⌥↵ чтобы сбросить кэш и попробовать снова.",
+                "arg": json.dumps(refresh_payload, ensure_ascii=False),
+                "valid": True,
+                "mods": {
+                    "alt": {
+                        "arg": json.dumps(refresh_payload, ensure_ascii=False),
+                        "subtitle": "↻ Сбросить кэш и попробовать снова",
+                        "valid": True,
+                    }
+                },
+            }
+        else:
+            placeholder = {
+                "title": detail,
+                "subtitle": f"{ticker.upper()} — try another period or command.",
+                "valid": False,
             }
         items.append(placeholder)
 
