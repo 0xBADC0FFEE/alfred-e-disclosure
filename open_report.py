@@ -24,6 +24,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional
 
+import report_cache
+
 try:
     from curl_cffi import requests as cf_requests  # type: ignore[import-not-found]
 except ImportError:  # pragma: no cover - optional dependency
@@ -56,6 +58,7 @@ class ReportPayload:
     period_raw: Optional[str] = None
     doc_type_raw: Optional[str] = None
     save_to_downloads: bool = False
+    force_refresh: bool = False
 
     @property
     def base_name(self) -> str:
@@ -113,6 +116,7 @@ def load_payload(args: argparse.Namespace) -> ReportPayload:
         period_raw=data.get("period_raw"),
         doc_type_raw=data.get("doc_type_raw"),
         save_to_downloads=bool(data.get("save_to_downloads")),
+        force_refresh=bool(data.get("force_refresh")),
     )
 
 
@@ -330,6 +334,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     try:
         args = parse_args(argv)
         payload = load_payload(args)
+        if payload.force_refresh:
+            report_cache.delete(payload.ticker, payload.doc_type)
         pdf_cache = ensure_pdf_cached(payload)
 
         if payload.save_to_downloads:

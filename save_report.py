@@ -15,6 +15,7 @@ if os.path.exists(lib_dir):
 
 from typing import Optional
 
+import report_cache
 from open_report import (
     ensure_pdf_cached,
     load_payload,
@@ -28,6 +29,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         args = parse_args(argv)
         payload = load_payload(args)
         payload.save_to_downloads = True
+        if payload.force_refresh:
+            report_cache.delete(payload.ticker, payload.doc_type)
         pdf_cache = ensure_pdf_cached(payload)
         saved_path = save_pdf_to_downloads(pdf_cache, payload)
         print(f"Saved {saved_path}")

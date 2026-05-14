@@ -511,8 +511,10 @@ def build_script_filter_items(
             }
         }
         if cache_age_label:
+            alt_payload = dict(arg_payload)
+            alt_payload["force_refresh"] = True
             mods["alt"] = {
-                "arg": json.dumps(arg_payload, ensure_ascii=False),
+                "arg": json.dumps(alt_payload, ensure_ascii=False),
                 "subtitle": f"↻ Обновить · Кэш: {cache_age_label}",
                 "valid": True,
             }
