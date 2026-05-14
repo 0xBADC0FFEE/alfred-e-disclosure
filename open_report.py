@@ -336,6 +336,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         payload = load_payload(args)
         if payload.force_refresh:
             report_cache.delete(payload.ticker, payload.doc_type)
+            print(f"Cache invalidated for {payload.ticker.upper()}/{payload.doc_type}")
+            return 0
         pdf_cache = ensure_pdf_cached(payload)
 
         if payload.save_to_downloads:
