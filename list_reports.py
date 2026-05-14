@@ -468,6 +468,7 @@ def build_script_filter_items(
     ticker: str,
     period_filter: Optional[str],
     cache_age_label: Optional[str],
+    doc_type: Optional[str] = None,
 ) -> dict:
     items = []
     pf_raw = (period_filter or "").strip()
@@ -530,13 +531,25 @@ def build_script_filter_items(
 
     if not items:
         detail = "No reports match the filter" if pf_raw else "No reports found"
-        items.append(
-            {
-                "title": detail,
-                "subtitle": f"{ticker.upper()} — try another period or command.",
-                "valid": False,
+        placeholder = {
+            "title": detail,
+            "subtitle": f"{ticker.upper()} — try another period or command.",
+            "valid": False,
+        }
+        if doc_type:
+            refresh_payload = {
+                "ticker": ticker.upper(),
+                "doc_type": doc_type,
+                "force_refresh": True,
             }
-        )
+            placeholder["mods"] = {
+                "alt": {
+                    "arg": json.dumps(refresh_payload, ensure_ascii=False),
+                    "subtitle": "↻ Сбросить кэш и попробовать снова",
+                    "valid": True,
+                }
+            }
+        items.append(placeholder)
 
     return {"items": items}
 
@@ -693,7 +706,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     if cache_items is None:
         data = _build_placeholder(ticker, worker_live)
     else:
-        data = build_script_filter_items(cache_items, ticker, period, cache_age_label)
+        data = build_script_filter_items(cache_items, ticker, period, cache_age_label, compact_type)
         if worker_live:
             data["rerun"] = 0.5
 

@@ -104,19 +104,21 @@ def load_payload(args: argparse.Namespace) -> ReportPayload:
             "period_raw": args.period_raw,
             "doc_type_raw": args.doc_type_raw,
         }
-    missing = [key for key in ("ticker", "url", "period", "doc_type", "publish_date") if not data.get(key)]
+    force_refresh = bool(data.get("force_refresh"))
+    required = ("ticker", "doc_type") if force_refresh else ("ticker", "url", "period", "doc_type", "publish_date")
+    missing = [key for key in required if not data.get(key)]
     if missing:
         raise ValueError(f"Missing payload fields: {', '.join(missing)}")
     return ReportPayload(
         ticker=data["ticker"],
-        url=data["url"],
-        period=data["period"],
+        url=data.get("url", ""),
+        period=data.get("period", ""),
         doc_type=data["doc_type"],
-        publish_date=data["publish_date"],
+        publish_date=data.get("publish_date", ""),
         period_raw=data.get("period_raw"),
         doc_type_raw=data.get("doc_type_raw"),
         save_to_downloads=bool(data.get("save_to_downloads")),
-        force_refresh=bool(data.get("force_refresh")),
+        force_refresh=force_refresh,
     )
 
 
