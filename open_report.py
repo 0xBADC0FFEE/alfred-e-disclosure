@@ -24,6 +24,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional
 
+import report_cache
+
 try:
     from curl_cffi import requests as cf_requests  # type: ignore[import-not-found]
 except ImportError:  # pragma: no cover - optional dependency
@@ -56,6 +58,7 @@ class ReportPayload:
     period_raw: Optional[str] = None
     doc_type_raw: Optional[str] = None
     save_to_downloads: bool = False
+    force_refresh: bool = False
 
     @property
     def base_name(self) -> str:
@@ -101,18 +104,21 @@ def load_payload(args: argparse.Namespace) -> ReportPayload:
             "period_raw": args.period_raw,
             "doc_type_raw": args.doc_type_raw,
         }
-    missing = [key for key in ("ticker", "url", "period", "doc_type", "publish_date") if not data.get(key)]
+    force_refresh = bool(data.get("force_refresh"))
+    required = ("ticker", "doc_type") if force_refresh else ("ticker", "url", "period", "doc_type", "publish_date")
+    missing = [key for key in required if not data.get(key)]
     if missing:
         raise ValueError(f"Missing payload fields: {', '.join(missing)}")
     return ReportPayload(
         ticker=data["ticker"],
-        url=data["url"],
-        period=data["period"],
+        url=data.get("url", ""),
+        period=data.get("period", ""),
         doc_type=data["doc_type"],
-        publish_date=data["publish_date"],
+        publish_date=data.get("publish_date", ""),
         period_raw=data.get("period_raw"),
         doc_type_raw=data.get("doc_type_raw"),
         save_to_downloads=bool(data.get("save_to_downloads")),
+        force_refresh=force_refresh,
     )
 
 
@@ -330,6 +336,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     try:
         args = parse_args(argv)
         payload = load_payload(args)
+        if payload.force_refresh:
+            report_cache.delete(payload.ticker, payload.doc_type)
+            print(f"Cache invalidated for {payload.ticker.upper()}/{payload.doc_type}")
+            return 0
         pdf_cache = ensure_pdf_cached(payload)
 
         if payload.save_to_downloads:

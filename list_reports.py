@@ -24,6 +24,12 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 from urllib.parse import urljoin
 
+import refresh_lock
+import relative_time_ru
+import report_cache
+
+REFRESH_AGE_THRESHOLD_SECONDS = 3600
+
 try:
     from curl_cffi import requests as cf_requests  # type: ignore[import-not-found]
 except ImportError:  # pragma: no cover - optional dependency
@@ -439,56 +445,118 @@ def collect_documents(company_id: str, wanted_compact_type: str) -> List[Documen
     return docs
 
 
+def docs_to_cache_items(docs: List[Document]) -> List[dict]:
+    return [
+        {
+            "doc_type_raw": d.doc_type_raw,
+            "doc_type": d.doc_type,
+            "period_raw": d.period_raw,
+            "period": d.period,
+            "publish_date": d.publish_date.isoformat(),
+            "url": d.url,
+        }
+        for d in docs
+    ]
+
+
+def _refresh_key(ticker: str, doc_type: str) -> str:
+    return f"{ticker.upper()}_{doc_type}"
+
+
 def build_script_filter_items(
-    docs: List[Document], ticker: str, period_filter: Optional[str]
+    cache_items: List[dict],
+    ticker: str,
+    period_filter: Optional[str],
+    cache_age_label: Optional[str],
+    doc_type: Optional[str] = None,
 ) -> dict:
     items = []
     pf_raw = (period_filter or "").strip()
     pf_upper = pf_raw.upper()
 
-    for doc in docs:
-        doc_period_upper = doc.period.upper()
-        if pf_upper and not doc_period_upper.startswith(pf_upper):
+    for ci in cache_items:
+        period = ci.get("period", "")
+        if pf_upper and not period.upper().startswith(pf_upper):
             continue
 
-        title = f"{doc.doc_type} - {doc.period}"
-        subtitle = f"{doc.publish_date.strftime('%d.%m.%Y')} — {doc.doc_type_raw}"
+        doc_type = ci.get("doc_type", "")
+        doc_type_raw = ci.get("doc_type_raw", "")
+        url = ci.get("url", "")
+        publish_iso = ci.get("publish_date", "")
+        try:
+            pub_dt = datetime.fromisoformat(publish_iso)
+            pub_date_str = pub_dt.strftime("%d.%m.%Y")
+            pub_iso_date = pub_dt.date().isoformat()
+        except ValueError:
+            pub_date_str = publish_iso
+            pub_iso_date = publish_iso
+
+        title = f"{doc_type} - {period}"
+        subtitle = f"{pub_date_str} — {doc_type_raw}"
         arg_payload = {
             "ticker": ticker.upper(),
-            "url": doc.url,
-            "period": doc.period,
-            "doc_type": doc.doc_type,
-            "publish_date": doc.publish_date.date().isoformat(),
-            "period_raw": doc.period_raw,
-            "doc_type_raw": doc.doc_type_raw,
+            "url": url,
+            "period": period,
+            "doc_type": doc_type,
+            "publish_date": pub_iso_date,
+            "period_raw": ci.get("period_raw", ""),
+            "doc_type_raw": doc_type_raw,
         }
         cmd_payload = dict(arg_payload)
         cmd_payload["save_to_downloads"] = True
+        mods = {
+            "cmd": {
+                "arg": json.dumps(cmd_payload, ensure_ascii=False),
+                "subtitle": "Save to ~/Downloads",
+                "valid": True,
+            }
+        }
+        if cache_age_label:
+            alt_payload = dict(arg_payload)
+            alt_payload["force_refresh"] = True
+            mods["alt"] = {
+                "arg": json.dumps(alt_payload, ensure_ascii=False),
+                "subtitle": f"↻ Обновить · Кэш: {cache_age_label}",
+                "valid": True,
+            }
         items.append(
             {
                 "title": title,
                 "subtitle": subtitle,
                 "arg": json.dumps(arg_payload, ensure_ascii=False),
                 "valid": True,
-                "mods": {
-                    "cmd": {
-                        "arg": json.dumps(cmd_payload, ensure_ascii=False),
-                        "subtitle": "Save to ~/Downloads",
-                        "valid": True,
-                    }
-                },
+                "mods": mods,
             }
         )
 
     if not items:
         detail = "No reports match the filter" if pf_raw else "No reports found"
-        items.append(
-            {
+        if doc_type:
+            refresh_payload = {
+                "ticker": ticker.upper(),
+                "doc_type": doc_type,
+                "force_refresh": True,
+            }
+            placeholder = {
+                "title": detail,
+                "subtitle": f"{ticker.upper()} — ↵ или ⌥↵ чтобы сбросить кэш и попробовать снова.",
+                "arg": json.dumps(refresh_payload, ensure_ascii=False),
+                "valid": True,
+                "mods": {
+                    "alt": {
+                        "arg": json.dumps(refresh_payload, ensure_ascii=False),
+                        "subtitle": "↻ Сбросить кэш и попробовать снова",
+                        "valid": True,
+                    }
+                },
+            }
+        else:
+            placeholder = {
                 "title": detail,
                 "subtitle": f"{ticker.upper()} — try another period or command.",
                 "valid": False,
             }
-        )
+        items.append(placeholder)
 
     return {"items": items}
 
@@ -573,8 +641,17 @@ def main(argv: Optional[List[str]] = None) -> None:
         dest="alfred_query",
         help="Raw query forwarded by Alfred (ticker [period]).",
     )
+    parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Synchronous slow-fetch worker: rewrites cache then exits silently.",
+    )
 
     args = parser.parse_args(argv)
+
+    if args.refresh:
+        _run_refresh_worker(args)
+        return
 
     ticker = args.pos_ticker
     period = args.period_override or args.pos_period
@@ -607,17 +684,92 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     compact_type = "МСФО" if args.command == "msfo" else "РСБУ"
 
+    cache_items: Optional[List[dict]] = None
+    cache_age_label: Optional[str] = None
+    cache_age_seconds: Optional[float] = None
+    now = datetime.now()
+
+    env = report_cache.read(ticker, compact_type)
+    if env is not None:
+        items = env.get("items")
+        fetched_at = report_cache.fetched_at(env)
+        if isinstance(items, list) and fetched_at is not None:
+            cache_items = items
+            cache_age_seconds = (now - fetched_at).total_seconds()
+            cache_age_label = relative_time_ru.format(now, fetched_at)
+            _log(f"cache hit {ticker}/{compact_type} age={cache_age_label} items={len(items)}")
+
+    key = _refresh_key(ticker, compact_type)
+    needs_refresh = cache_items is None or (
+        cache_age_seconds is not None and cache_age_seconds >= REFRESH_AGE_THRESHOLD_SECONDS
+    )
+    if needs_refresh:
+        spawn_argv = _refresh_worker_argv(args.command, ticker, compact_type)
+        spawned = refresh_lock.spawn_refresh(key, spawn_argv)
+        if spawned:
+            _log(f"spawned refresh worker {key}")
+    worker_live = refresh_lock.is_refreshing(key)
+
+    if cache_items is None:
+        data = _build_placeholder(ticker, worker_live)
+    else:
+        data = build_script_filter_items(cache_items, ticker, period, cache_age_label, compact_type)
+        if worker_live:
+            data["rerun"] = 0.5
+
+    json.dump(data, sys.stdout, ensure_ascii=False, indent=2)
+
+
+def _refresh_worker_argv(command: str, ticker: str, doc_type: str) -> List[str]:
+    return [
+        sys.executable,
+        os.path.abspath(__file__),
+        command,
+        ticker,
+        "--refresh",
+    ]
+
+
+def _build_placeholder(ticker: str, worker_live: bool) -> dict:
+    data = {
+        "items": [
+            {
+                "title": f"Обновляем для {ticker.upper()}…",
+                "subtitle": "Загружаем отчёты с e-disclosure.ru",
+                "valid": False,
+            }
+        ]
+    }
+    if worker_live:
+        data["rerun"] = 0.5
+    return data
+
+
+def _run_refresh_worker(args: argparse.Namespace) -> None:
+    ticker = args.pos_ticker
+    if args.alfred_query:
+        q_ticker, _ = parse_query(args.alfred_query)
+        ticker = q_ticker or ticker
+    if not ticker:
+        _log("refresh: ticker required")
+        return
+    compact_type = "МСФО" if args.command == "msfo" else "РСБУ"
+    key = _refresh_key(ticker, compact_type)
+    pid = os.getpid()
     try:
         company_id = load_company_id(ticker)
-        _log(f"start {args.command} ticker={ticker} edid={company_id}")
+        _log(f"refresh worker pid={pid} {ticker}/{compact_type} edid={company_id}")
         docs = collect_documents(company_id, compact_type)
-        _log(f"done: {len(docs)} docs")
-    except Exception as exc:  # pragma: no cover - network/filesystem errors
-        emit_error("Failed to fetch reports", str(exc))
-        return
-
-    data = build_script_filter_items(docs, ticker, period)
-    json.dump(data, sys.stdout, ensure_ascii=False, indent=2)
+        cache_items = docs_to_cache_items(docs)
+        if not cache_items:
+            _log(f"refresh worker pid={pid} empty result, skipping cache write")
+        else:
+            report_cache.write(ticker, compact_type, cache_items, datetime.now())
+            _log(f"refresh worker pid={pid} wrote {len(cache_items)} items")
+    except Exception as exc:  # pragma: no cover - worker errors
+        _log(f"refresh worker pid={pid} failed: {exc}")
+    finally:
+        refresh_lock.release(key, pid)
 
 
 if __name__ == "__main__":
