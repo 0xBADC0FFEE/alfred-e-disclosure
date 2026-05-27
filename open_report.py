@@ -57,12 +57,19 @@ class ReportPayload:
     publish_date: str  # YYYY-MM-DD
     period_raw: Optional[str] = None
     doc_type_raw: Optional[str] = None
+    file_id: str = ""
+    size: str = ""
     save_to_downloads: bool = False
     force_refresh: bool = False
 
     @property
     def base_name(self) -> str:
-        return f"{self.ticker.upper()}_{self.doc_type}_{self.period}_{self.publish_date}"
+        name = f"{self.ticker.upper()}_{self.doc_type}_{self.period}_{self.publish_date}"
+        # Suffix the portal file id so reports sharing a period (different
+        # currencies/parts) cache independently. Legacy payloads lack it.
+        if self.file_id:
+            name += f"_{self.file_id}"
+        return name
 
     @property
     def cache_dir(self) -> Path:
@@ -117,6 +124,8 @@ def load_payload(args: argparse.Namespace) -> ReportPayload:
         publish_date=data.get("publish_date", ""),
         period_raw=data.get("period_raw"),
         doc_type_raw=data.get("doc_type_raw"),
+        file_id=data.get("file_id", ""),
+        size=data.get("size", ""),
         save_to_downloads=bool(data.get("save_to_downloads")),
         force_refresh=force_refresh,
     )

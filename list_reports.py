@@ -95,6 +95,8 @@ class Document:
     period: str
     publish_date: datetime
     url: str
+    file_id: str = ""
+    size: str = ""
 
 
 class FilesTableParser(HTMLParser):
@@ -108,6 +110,7 @@ class FilesTableParser(HTMLParser):
         self.current_row: dict = {}
         self.rows: List[dict] = []
         self.in_file_cell = False
+        self.in_file_link = False
 
     def handle_starttag(self, tag: str, attrs) -> None:
         attrs_dict = dict(attrs)
@@ -122,8 +125,11 @@ class FilesTableParser(HTMLParser):
                 "period": "",
                 "publish_date": "",
                 "file_url": "",
+                "file_id": "",
+                "size": "",
             }
             self.in_file_cell = False
+            self.in_file_link = False
         elif tag == "td" and self.in_row:
             self.current_cell_index += 1
             if self.current_cell_index == 5:
@@ -137,11 +143,18 @@ class FilesTableParser(HTMLParser):
             href = attrs_dict.get("href")
             if href:
                 self.current_row["file_url"] = href
+            file_id = attrs_dict.get("data-fileid")
+            if file_id:
+                self.current_row["file_id"] = file_id.strip()
+            self.in_file_link = True
 
     def handle_endtag(self, tag: str) -> None:
-        if tag == "tr" and self.in_row:
+        if tag == "a" and self.in_file_link:
+            self.in_file_link = False
+        elif tag == "tr" and self.in_row:
             self.in_row = False
             self.in_file_cell = False
+            self.in_file_link = False
             if self.current_row.get("file_url"):
                 self.rows.append(self.current_row)
         elif tag == "table" and self.in_files_table:
@@ -149,6 +162,14 @@ class FilesTableParser(HTMLParser):
 
     def handle_data(self, data: str) -> None:
         if not self.in_row:
+            return
+        if self.in_file_link:
+            # Link text carries the archive size, e.g. "zip, 250.77 КБ".
+            chunk = data.strip()
+            if chunk:
+                if self.current_row["size"]:
+                    self.current_row["size"] += " "
+                self.current_row["size"] += chunk
             return
         text = data.strip()
         if not text:
@@ -235,6 +256,14 @@ def normalize_period(text: str) -> str:
         return f"{year}M{n}"
 
     return year
+
+
+def normalize_size(text: str) -> str:
+    """Tidy the listing's size label: 'zip,\\xa0250.77\\xa0КБ' -> 'zip 250.77 КБ'."""
+    if not text:
+        return ""
+    cleaned = text.replace("\xa0", " ").replace(",", " ")
+    return " ".join(cleaned.split())
 
 
 def parse_publish_date(text: str) -> Optional[datetime]:
@@ -438,6 +467,8 @@ def collect_documents(company_id: str, wanted_compact_type: str) -> List[Documen
                     period=period_norm,
                     publish_date=pub_dt,
                     url=url,
+                    file_id=row.get("file_id", "").strip(),
+                    size=normalize_size(row.get("size", "")),
                 )
             )
 
@@ -454,6 +485,8 @@ def docs_to_cache_items(docs: List[Document]) -> List[dict]:
             "period": d.period,
             "publish_date": d.publish_date.isoformat(),
             "url": d.url,
+            "file_id": d.file_id,
+            "size": d.size,
         }
         for d in docs
     ]
@@ -491,8 +524,14 @@ def build_script_filter_items(
             pub_date_str = publish_iso
             pub_iso_date = publish_iso
 
+        file_id = ci.get("file_id", "")
+        size = ci.get("size", "")
+
         title = f"{doc_type} - {period}"
-        subtitle = f"{pub_date_str} — {doc_type_raw}"
+        if file_id:
+            title += f" • {file_id}"
+        # Order: date → size → long name (long name truncates last).
+        subtitle = " · ".join(p for p in (pub_date_str, size, doc_type_raw) if p)
         arg_payload = {
             "ticker": ticker.upper(),
             "url": url,
@@ -501,6 +540,8 @@ def build_script_filter_items(
             "publish_date": pub_iso_date,
             "period_raw": ci.get("period_raw", ""),
             "doc_type_raw": doc_type_raw,
+            "file_id": file_id,
+            "size": size,
         }
         cmd_payload = dict(arg_payload)
         cmd_payload["save_to_downloads"] = True
