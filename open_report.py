@@ -362,7 +362,7 @@ def run_arm(payload: ReportPayload) -> int:
         solved = list_reports.human_arm(payload.ticker, payload.doc_type)
     except list_reports.BrowserMissingError as exc:
         print(
-            f"Нужен браузер для проверки. Выполните: scrapling install ({exc})",
+            f"Нужен браузер для проверки. Выполните: patchright install chromium ({exc})",
             file=sys.stderr,
         )
         return 1

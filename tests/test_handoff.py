@@ -18,8 +18,9 @@ def test_manual_override_is_used(monkeypatch):
 
 def test_missing_browser_binary_error_is_recognised():
     # A browser-binary-missing launch error must be told apart from a real fault,
-    # so the arm surfaces the "scrapling install" hint instead of a cryptic error.
-    missing = Exception("Executable doesn't exist at /path/to/camoufox")
+    # so the arm surfaces the "patchright install chromium" hint instead of a
+    # cryptic error.
+    missing = Exception("Executable doesn't exist at /path/to/chromium")
     real_fault = Exception("net::ERR_CONNECTION_REFUSED")
     assert list_reports._looks_like_missing_browser(missing) is True
     assert list_reports._looks_like_missing_browser(real_fault) is False

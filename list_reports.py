@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 from urllib.parse import urljoin
 
 import cache_dir
@@ -49,13 +49,16 @@ HEADLESS_ARM_DEADLINE_MS = 20_000
 
 # Substrings that mark a "stealth browser binary is missing" failure (as opposed
 # to the scrapling package being absent), so we can point the user at
-# `scrapling install` instead of a cryptic launch error.
+# `patchright install chromium` instead of a cryptic launch error. StealthyFetcher
+# runs on patchright-chromium in scrapling 0.4.x (not camoufox), so the launch
+# error names chromium/playwright.
 _MISSING_BROWSER_MARKERS = (
     "executable",
     "doesn't exist",
     "not found",
     "no such file",
-    "camoufox",
+    "chromium",
+    "playwright",
     "install",
 )
 
@@ -78,12 +81,14 @@ BASE_URL = "https://www.e-disclosure.ru/portal/"
 
 
 def _profile_dir() -> Path:
-    """The persistent camoufox profile bridging the headed solve and the
-    headless refresh (separate processes): the solved ServicePipe session lives
-    here on disk, so a later launch reopens an already-armed browser state — no
-    cookie harvest, no curl_cffi handoff.
+    """The persistent chromium profile bridging the headed solve and the headless
+    refresh (separate processes): StealthyFetcher opens it via Playwright's
+    ``launch_persistent_context``, so the solved ServicePipe session lives here on
+    disk and a later launch reopens an already-armed browser state — no cookie
+    harvest, no curl_cffi handoff. Chromium keeps the fingerprint stable across
+    launches (unlike camoufox), so the persistent dir alone survives the challenge.
     """
-    return cache_dir.root() / "camoufox-profile"
+    return cache_dir.root() / "browser-profile"
 
 
 class ChallengeError(Exception):
@@ -162,7 +167,7 @@ def _stealthy_arm(url: str, *, headless: bool, deadline_ms: int) -> str:
         from scrapling.fetchers import StealthyFetcher  # type: ignore[import-not-found]
     except ImportError as exc:
         raise BrowserMissingError(
-            "install: pip install 'scrapling[fetchers]' && scrapling install"
+            "install: pip install 'scrapling[fetchers]' && patchright install chromium"
         ) from exc
 
     def solve(page):
@@ -178,8 +183,6 @@ def _stealthy_arm(url: str, *, headless: bool, deadline_ms: int) -> str:
             url,
             headless=headless,
             network_idle=True,
-            humanize=True,
-            spoof_fingerprint=True,
             user_data_dir=str(_profile_dir()),
             timeout=deadline_ms + 30_000,
             page_action=solve,
@@ -246,34 +249,97 @@ def _stealthy_fetch_html(url: str) -> Optional[str]:
             return None
 
 
-def human_arm(ticker: str, compact_type: str) -> bool:
-    """Solve the challenge in a headed browser, filling the persistent profile,
-    then refresh both filing types through that armed profile.
+def _arm_page_types() -> Tuple[int, ...]:
+    """Every portal page type both caches need, highest first (type=4 leads so
+    the human solves on the МСФО page). One headed solve harvests them all."""
+    wanted = {*_page_types("МСФО"), *_page_types("РСБУ")}
+    return tuple(sorted(wanted, reverse=True))
 
-    The cleared session lives in the on-disk profile, so the normal refresh path
-    (curl_cffi → challenge → headless StealthyFetcher on the same profile) now
-    reaches the real listing. Returns True only if a refresh actually produced an
-    ``ok`` envelope — reaching the table but still getting a challenge on refresh
-    is a failure, not the old "harvest happened" false positive.
+
+def _headed_harvest(
+    company_id: str, page_types: Tuple[int, ...], deadline_ms: int
+) -> Dict[int, str]:
+    """Open one headed StealthyFetcher on the persistent profile, let the human
+    clear the challenge on the first page, then walk the remaining page types in
+    the *same armed context*, grabbing each listing's HTML.
+
+    ServicePipe re-challenges a headless relaunch even with the cleared cookies on
+    disk — the profile persists and a headed reopen sails through, but the headless
+    fingerprint is rejected. So the refresh can't hand off to a background headless
+    fetch; harvesting every needed page inside the live headed session sidesteps
+    that: same fingerprint, one solve. Returns ``{page_type: html}``. Raises
+    :class:`BrowserMissingError` when the stealth browser is unavailable.
+    """
+    try:
+        from scrapling.fetchers import StealthyFetcher  # type: ignore[import-not-found]
+    except ImportError as exc:
+        raise BrowserMissingError(
+            "install: pip install 'scrapling[fetchers]' && patchright install chromium"
+        ) from exc
+
+    first, *rest = page_types
+    harvested: Dict[int, str] = {}
+
+    def solve(page):
+        # scrapling runs page_action before its own wait, so block here for the
+        # human to clear the challenge on the first page, then reuse the armed
+        # context for the rest (no further challenge — proven for a headed reopen).
+        page.wait_for_selector(FILES_TABLE_SELECTOR, timeout=deadline_ms)
+        harvested[first] = page.content()
+        for page_type in rest:
+            page.goto(_files_url(company_id, page_type), wait_until="load")
+            page.wait_for_selector(
+                FILES_TABLE_SELECTOR, timeout=HEADLESS_ARM_DEADLINE_MS
+            )
+            harvested[page_type] = page.content()
+        return page
+
+    _log(f"headed harvest types={page_types} id={company_id}")
+    try:
+        StealthyFetcher.fetch(
+            _files_url(company_id, first),
+            headless=False,
+            network_idle=True,
+            user_data_dir=str(_profile_dir()),
+            timeout=deadline_ms + 30_000,
+            page_action=solve,
+        )
+    except Exception as exc:  # noqa: BLE001
+        if _looks_like_missing_browser(exc):
+            raise BrowserMissingError(str(exc)) from exc
+        raise
+    _log(f"headed harvest done: {{{', '.join(f'{k}:{len(v)}b' for k, v in harvested.items())}}}")
+    return harvested
+
+
+def human_arm(ticker: str, compact_type: str) -> bool:
+    """Solve the challenge once in a headed browser and fill both caches from that
+    same armed session.
+
+    ServicePipe rejects a headless relaunch even against the armed on-disk profile,
+    so the listings are scraped inside the live headed window (see
+    :func:`_headed_harvest`) rather than via a headless refresh. Returns True only
+    if a refresh actually produced an ``ok`` envelope — reaching the table but
+    parsing nothing usable is a failure, not the old "harvest happened" false
+    positive. ``compact_type`` is unused: one solve arms the whole origin, so both
+    caches refill regardless of which type the user clicked.
 
     Raises :class:`BrowserMissingError` when the stealth browser is unavailable.
     """
     company_id = load_company_id(ticker)
-    page_type = _page_types(compact_type)[0]
-    url = _files_url(company_id, page_type)
-
-    _log(f"headed solve {url}")
-    html = _stealthy_arm(url, headless=False, deadline_ms=ARM_DEADLINE_MS)
-    if _is_challenge_page(html):
+    harvested = _headed_harvest(company_id, _arm_page_types(), ARM_DEADLINE_MS)
+    if not harvested or any(_is_challenge_page(h) for h in harvested.values()):
         _log("headed solve did not reach the files table")
         return False
 
-    # One solve arms the profile for the whole origin, so refill both caches.
+    def armed_fetcher(_company_id: str, page_type: int) -> str:
+        return harvested.get(page_type, "")
+
     # Both refreshes must run (they fill different caches), so this can't
     # collapse to a short-circuiting any().
     armed = False
     for ct in ("МСФО", "РСБУ"):
-        env = run_refresh(ticker, ct)
+        env = run_refresh(ticker, ct, fetcher=armed_fetcher)
         if env.is_ok:
             armed = True
     return armed

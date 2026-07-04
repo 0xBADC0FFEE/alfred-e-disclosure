@@ -23,6 +23,11 @@ def _arm_returns(html):
     return lambda url, *, headless, deadline_ms: html
 
 
+def _harvest_returns(html):
+    """Stub _headed_harvest: same HTML for every requested page type."""
+    return lambda company_id, page_types, deadline_ms: {pt: html for pt in page_types}
+
+
 # --- _stealthy_fetch_html profile guard ---------------------------------------
 
 def test_fetch_skips_when_profile_owned_by_other_process(monkeypatch):
@@ -63,18 +68,20 @@ def test_fetch_is_reentrant_when_profile_owned_by_self(monkeypatch):
 # --- human_arm success rule ---------------------------------------------------
 
 def test_human_arm_false_when_challenge_not_cleared(monkeypatch, challenge_html):
-    monkeypatch.setattr(list_reports, "_stealthy_arm", _arm_returns(challenge_html))
+    monkeypatch.setattr(list_reports, "_headed_harvest", _harvest_returns(challenge_html))
     refreshed = []
-    monkeypatch.setattr(list_reports, "run_refresh", lambda t, c: refreshed.append(c))
+    monkeypatch.setattr(
+        list_reports, "run_refresh", lambda t, c, fetcher=None: refreshed.append(c)
+    )
 
     assert list_reports.human_arm(TICKER, "МСФО") is False
     assert refreshed == []  # an unsolved challenge never triggers a refresh
 
 
 def test_human_arm_true_when_any_refresh_is_ok(monkeypatch):
-    monkeypatch.setattr(list_reports, "_stealthy_arm", _arm_returns(FILES_HTML))
+    monkeypatch.setattr(list_reports, "_headed_harvest", _harvest_returns(FILES_HTML))
 
-    def fake_refresh(ticker, ct):
+    def fake_refresh(ticker, ct, fetcher=None):
         if ct == "МСФО":
             return report_cache.ok([{"period": "2024Q1"}], datetime.now())
         return report_cache.failure(Status.CHALLENGE, datetime.now(), datetime.now(), None)
@@ -86,9 +93,11 @@ def test_human_arm_true_when_any_refresh_is_ok(monkeypatch):
 def test_human_arm_false_when_cleared_but_every_refresh_fails(monkeypatch):
     # The false-success fix: reaching the table but every follow-up refresh still
     # getting a challenge is a failure, not the old harvest-succeeded true.
-    monkeypatch.setattr(list_reports, "_stealthy_arm", _arm_returns(FILES_HTML))
+    monkeypatch.setattr(list_reports, "_headed_harvest", _harvest_returns(FILES_HTML))
     monkeypatch.setattr(
         list_reports, "run_refresh",
-        lambda t, c: report_cache.failure(Status.CHALLENGE, datetime.now(), datetime.now(), None),
+        lambda t, c, fetcher=None: report_cache.failure(
+            Status.CHALLENGE, datetime.now(), datetime.now(), None
+        ),
     )
     assert list_reports.human_arm(TICKER, "МСФО") is False
