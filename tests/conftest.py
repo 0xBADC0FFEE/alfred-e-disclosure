@@ -38,3 +38,8 @@ def spinner_challenge_html() -> str:
 @pytest.fixture
 def normal_html() -> str:
     return (_FIXTURES / "files_normal.html").read_text(encoding="utf-8")
+
+
+@pytest.fixture
+def hard_block_html() -> str:
+    return (_FIXTURES / "hard_block.html").read_text(encoding="utf-8")

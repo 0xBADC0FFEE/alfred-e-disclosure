@@ -50,6 +50,42 @@ def test_fetch_acquires_and_releases_when_profile_free(monkeypatch):
     assert released == [list_reports.PROFILE_LOCK_KEY]  # released only what it took
 
 
+def _free_profile_lock(monkeypatch):
+    """Wire the profile guard so the fetch proceeds and can take/release the lock."""
+    monkeypatch.setattr(refresh_lock, "owner", lambda k: None)
+    monkeypatch.setattr(refresh_lock, "acquire", lambda k: True)
+    monkeypatch.setattr(refresh_lock, "release", lambda k, pid: None)
+
+
+def test_fetch_wipes_poisoned_profile_on_hard_block(monkeypatch, hard_block_html):
+    # A terminal 403 means the profile's ServicePipe session is blacklisted:
+    # the fetch discards the profile dir and returns "no result" so the next
+    # solve opens on a clean profile.
+    _free_profile_lock(monkeypatch)
+    monkeypatch.setattr(list_reports, "_stealthy_arm", _arm_returns(hard_block_html))
+
+    profile = list_reports._profile_dir()
+    profile.mkdir(parents=True, exist_ok=True)
+    (profile / "Cookies").write_text("poisoned")
+
+    assert list_reports._stealthy_fetch_html("http://x") is None
+    assert not profile.exists()  # poisoned profile discarded
+
+
+def test_fetch_keeps_profile_on_normal_listing(monkeypatch):
+    # The non-403 path must never throw away a good session: an armed listing is
+    # returned unchanged and the profile survives.
+    _free_profile_lock(monkeypatch)
+    monkeypatch.setattr(list_reports, "_stealthy_arm", _arm_returns(FILES_HTML))
+
+    profile = list_reports._profile_dir()
+    profile.mkdir(parents=True, exist_ok=True)
+    (profile / "Cookies").write_text("armed")
+
+    assert list_reports._stealthy_fetch_html("http://x") == FILES_HTML
+    assert profile.exists()  # good session kept
+
+
 def test_fetch_is_reentrant_when_profile_owned_by_self(monkeypatch):
     # The human-arm process already holds the profile; its follow-up refresh must
     # reuse it, not re-acquire (would fail) or release someone else's hold.
