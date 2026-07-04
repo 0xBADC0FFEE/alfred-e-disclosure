@@ -9,22 +9,15 @@ from __future__ import annotations
 import errno
 import os
 import subprocess
-import tempfile
 from pathlib import Path
 from typing import Sequence
 
-_DIR_NAME = "alfred-e-disclosure-cache"
-
-
-def _dir() -> Path:
-    d = Path(tempfile.gettempdir()) / _DIR_NAME
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+import cache_dir
 
 
 def _path(key: str) -> Path:
     safe = key.replace("/", "_")
-    return _dir() / f"{safe}.lock"
+    return cache_dir.root() / f"{safe}.lock"
 
 
 def _pid_alive(pid: int) -> bool:

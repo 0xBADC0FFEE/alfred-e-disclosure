@@ -12,6 +12,7 @@ import argparse
 import csv
 import gzip
 import json
+import random
 import threading
 import urllib.request
 import urllib.response
@@ -21,12 +22,14 @@ from dataclasses import dataclass
 from datetime import datetime
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 from urllib.parse import urljoin
 
 import refresh_lock
 import relative_time_ru
 import report_cache
+import retry_policy
+from report_cache import Status
 
 REFRESH_AGE_THRESHOLD_SECONDS = 3600
 
@@ -43,18 +46,35 @@ _warned_stealthy_missing = False
 BASE_URL = "https://www.e-disclosure.ru/portal/"
 
 
-def _is_challenge_page(html: str) -> bool:
-    """ServicePipe Cybert anti-bot challenge — spinner page instead of real HTML.
+class ChallengeError(Exception):
+    """Portal served an anti-bot challenge instead of the files table."""
 
-    Real e-disclosure pages embed ServicePipe tracking JS too, so detect by the
-    spinner div and absence of the actual files-table marker.
-    """
+
+# Robo-check markers seen on ServicePipe block/CAPTCHA pages. Two forms are
+# served in the wild, so we match both: the classic ~2 KB spinner interstitial
+# (`id_spinner` / the `js-challenge-loader` mount / `is_captcha` options) and the
+# newer ~15 KB rotate-image CAPTCHA ("разверните картинку", robots NOINDEX).
+# A challenge is the absence of the `files-table` content marker *plus* any of
+# these. Bare "servicepipe" is excluded: real content pages embed its tracking JS.
+_CHALLENGE_MARKERS = (
+    "проверк",
+    "noindex",
+    "разверните картинку",
+    "id_spinner",
+    "js-challenge-loader",
+    "id_captcha_frame_div",
+    "is_captcha",
+)
+
+
+def _is_challenge_page(html: str) -> bool:
+    """True when ``html`` is an anti-bot challenge rather than the real listing."""
     if not html:
         return True
     if "files-table" in html:
         return False
     lowered = html.lower()
-    return "id_spinner" in lowered or len(html) < 5000
+    return any(marker in lowered for marker in _CHALLENGE_MARKERS)
 
 
 def _log(msg: str) -> None:
@@ -295,12 +315,15 @@ def decode_http_body(resp: urllib.response.addinfourl) -> str:
     return raw.decode(charset, errors="ignore")
 
 
+class UnknownTickerError(Exception):
+    """Ticker has no e-disclosure company id in tickers.csv."""
+
+
 def load_company_id(ticker: str) -> str:
     ticker_up = ticker.upper()
     csv_path = Path(__file__).resolve().parent / "tickers.csv"
     if not csv_path.is_file():
-        print(f"Ticker mapping file not found: {csv_path}", file=sys.stderr)
-        sys.exit(1)
+        raise UnknownTickerError(f"Ticker mapping file not found: {csv_path}")
 
     with csv_path.open(newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
@@ -309,8 +332,7 @@ def load_company_id(ticker: str) -> str:
                 company_id = row.get("EDID")
                 if company_id:
                     return company_id
-    print(f"Unknown ticker: {ticker}", file=sys.stderr)
-    sys.exit(1)
+    raise UnknownTickerError(f"Unknown ticker: {ticker}")
 
 
 def load_tickers() -> List[Tuple[str, str, str]]:
@@ -412,13 +434,24 @@ def fetch_table_html(company_id: str, doc_page_type: int) -> str:
     return html
 
 
-def collect_documents(company_id: str, wanted_compact_type: str) -> List[Document]:
+HtmlFetcher = Callable[[str, int], str]
+
+
+def collect_documents(
+    company_id: str,
+    wanted_compact_type: str,
+    fetcher: HtmlFetcher = fetch_table_html,
+) -> List[Document]:
     """
     Collect documents of a certain compact type ('МСФО' or 'РСБУ').
 
     For 'МСФО' we look both at type=4 and type=3 pages because
     sometimes IFRS reports appear on the RSBU page.
     For 'РСБУ' we use only type=3.
+
+    ``fetcher`` is injectable so tests can drive fixtures without the network.
+    Raises :class:`ChallengeError` if any page comes back as an anti-bot
+    challenge; network/parse failures propagate to the caller.
     """
     docs: List[Document] = []
 
@@ -430,11 +463,13 @@ def collect_documents(company_id: str, wanted_compact_type: str) -> List[Documen
     _log(f"collect id={company_id} types={page_types}")
     if len(page_types) > 1:
         with ThreadPoolExecutor(max_workers=len(page_types)) as executor:
-            htmls = list(executor.map(lambda t: fetch_table_html(company_id, t), page_types))
+            htmls = list(executor.map(lambda t: fetcher(company_id, t), page_types))
     else:
-        htmls = [fetch_table_html(company_id, page_types[0])]
+        htmls = [fetcher(company_id, page_types[0])]
 
     for page_type, html in zip(page_types, htmls):
+        if _is_challenge_page(html):
+            raise ChallengeError(f"challenge on type={page_type}")
         parser = FilesTableParser()
         parser.feed(html)
         _log(f"parsed type={page_type}: {len(parser.rows)} rows")
@@ -725,40 +760,75 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     compact_type = "МСФО" if args.command == "msfo" else "РСБУ"
 
-    cache_items: Optional[List[dict]] = None
-    cache_age_label: Optional[str] = None
-    cache_age_seconds: Optional[float] = None
     now = datetime.now()
-
     env = report_cache.read(ticker, compact_type)
-    if env is not None:
-        items = env.get("items")
-        fetched_at = report_cache.fetched_at(env)
-        if isinstance(items, list) and fetched_at is not None:
-            cache_items = items
-            cache_age_seconds = (now - fetched_at).total_seconds()
-            cache_age_label = relative_time_ru.format(now, fetched_at)
-            _log(f"cache hit {ticker}/{compact_type} age={cache_age_label} items={len(items)}")
-
     key = _refresh_key(ticker, compact_type)
-    needs_refresh = cache_items is None or (
-        cache_age_seconds is not None and cache_age_seconds >= REFRESH_AGE_THRESHOLD_SECONDS
-    )
-    if needs_refresh:
+
+    if _should_spawn(env, now):
         spawn_argv = _refresh_worker_argv(args.command, ticker, compact_type)
-        spawned = refresh_lock.spawn_refresh(key, spawn_argv)
-        if spawned:
-            _log(f"spawned refresh worker {key}")
+        if refresh_lock.spawn_refresh(key, spawn_argv):
+            _log(f"spawned refresh worker {key} ({_spawn_reason(env, now)})")
     worker_live = refresh_lock.is_refreshing(key)
 
-    if cache_items is None:
-        data = _build_placeholder(ticker, worker_live)
-    else:
-        data = build_script_filter_items(cache_items, ticker, period, cache_age_label, compact_type)
+    data = _build_output(env, ticker, period, compact_type, now, worker_live)
+    json.dump(data, sys.stdout, ensure_ascii=False, indent=2)
+
+
+def _should_spawn(env: Optional[report_cache.Envelope], now: datetime) -> bool:
+    """Whether ``main()`` may spawn a refresh worker for this key right now.
+
+    The cooldown lives here: a fresh failure envelope whose ``next_retry_at`` is
+    still in the future is left alone, so we don't respawn a worker on every tick.
+    ``spawn_refresh`` separately refuses to double-spawn while one is live.
+    """
+    if env is None:
+        return True
+    if env.is_ok:
+        if env.fetched_at is None:
+            return True
+        age = (now - env.fetched_at).total_seconds()
+        return age >= REFRESH_AGE_THRESHOLD_SECONDS
+    # Failure envelope: only once the backoff cooldown has elapsed.
+    return env.next_retry_at is None or now >= env.next_retry_at
+
+
+def _spawn_reason(env: Optional[report_cache.Envelope], now: datetime) -> str:
+    if env is None:
+        return "cold cache"
+    if env.is_ok:
+        return "stale cache"
+    return f"retry after cooldown (attempt {env.attempts + 1})"
+
+
+def _build_output(
+    env: Optional[report_cache.Envelope],
+    ticker: str,
+    period: Optional[str],
+    compact_type: str,
+    now: datetime,
+    worker_live: bool,
+) -> dict:
+    have_items = env is not None and env.has_items
+    if have_items:
+        cache_age_label = relative_time_ru.format(now, env.fetched_at)
+        data = build_script_filter_items(
+            env.items, ticker, period, cache_age_label, compact_type
+        )
+        stale_failed = not env.is_ok and not worker_live
+        if stale_failed:
+            data["items"].insert(0, _stale_badge_item(cache_age_label))
         if worker_live:
             data["rerun"] = 0.5
+        return data
 
-    json.dump(data, sys.stdout, ensure_ascii=False, indent=2)
+    # No usable items yet.
+    if worker_live:
+        return _build_placeholder(ticker, worker_live=True)
+    if env is not None and not env.is_ok:
+        return _build_error_item(ticker, env.status, compact_type)
+    # Cold cache and the worker didn't come up (e.g. spawn failed): show the
+    # placeholder once, without a rerun so it can't spin forever.
+    return _build_placeholder(ticker, worker_live=False)
 
 
 def _refresh_worker_argv(command: str, ticker: str, doc_type: str) -> List[str]:
@@ -786,6 +856,70 @@ def _build_placeholder(ticker: str, worker_live: bool) -> dict:
     return data
 
 
+def _stale_badge_item(cache_age_label: str) -> dict:
+    return {
+        "title": "⚠︎ Обновление не удалось",
+        "subtitle": f"Показаны сохранённые данные · Кэш: {cache_age_label}",
+        "valid": False,
+    }
+
+
+def _build_error_item(ticker: str, status: Status, doc_type: str) -> dict:
+    """Terminal error row (no ``rerun``) distinguishing block from network fault.
+
+    ↵ / ⌥↵ carries ``force_refresh`` so the user can force a fresh attempt: the
+    open handler clears the cache, and the next tick re-spawns a worker.
+    """
+    if status is Status.CHALLENGE:
+        title = f"Портал заблокировал запрос — {ticker.upper()}"
+        subtitle = "e-disclosure.ru показал проверку. ↵ или ⌥↵ — попробовать снова."
+    else:
+        title = f"Не удалось загрузить отчёты — {ticker.upper()}"
+        subtitle = "Сетевая ошибка. ↵ или ⌥↵ — попробовать снова."
+    refresh_payload = {
+        "ticker": ticker.upper(),
+        "doc_type": doc_type,
+        "force_refresh": True,
+    }
+    arg = json.dumps(refresh_payload, ensure_ascii=False)
+    return {
+        "items": [
+            {
+                "title": title,
+                "subtitle": subtitle,
+                "arg": arg,
+                "valid": True,
+                "mods": {
+                    "alt": {
+                        "arg": arg,
+                        "subtitle": "↻ Сбросить кэш и попробовать снова",
+                        "valid": True,
+                    }
+                },
+            }
+        ]
+    }
+
+
+def _record_failure(
+    ticker: str,
+    doc_type: str,
+    status: Status,
+    prev: Optional[report_cache.Envelope],
+    reason: str,
+) -> report_cache.Envelope:
+    now = datetime.now()
+    attempts = (prev.attempts if prev is not None else 0) + 1
+    nra = retry_policy.next_retry_at(attempts, now, random.random())
+    env = report_cache.failure(status, now, nra, prev)
+    report_cache.write(ticker, doc_type, env)
+    _log(
+        f"refresh worker {status.value} attempt={attempts} "
+        f"next_retry={nra.isoformat()} reason={reason}"
+    )
+    return env
+
+
 def _run_refresh_worker(args: argparse.Namespace) -> None:
     ticker = args.pos_ticker
     if args.alfred_query:
@@ -798,19 +932,41 @@ def _run_refresh_worker(args: argparse.Namespace) -> None:
     key = _refresh_key(ticker, compact_type)
     pid = os.getpid()
     try:
-        company_id = load_company_id(ticker)
-        _log(f"refresh worker pid={pid} {ticker}/{compact_type} edid={company_id}")
-        docs = collect_documents(company_id, compact_type)
-        cache_items = docs_to_cache_items(docs)
-        if not cache_items:
-            _log(f"refresh worker pid={pid} empty result, skipping cache write")
-        else:
-            report_cache.write(ticker, compact_type, cache_items, datetime.now())
-            _log(f"refresh worker pid={pid} wrote {len(cache_items)} items")
-    except Exception as exc:  # pragma: no cover - worker errors
-        _log(f"refresh worker pid={pid} failed: {exc}")
+        run_refresh(ticker, compact_type)
     finally:
         refresh_lock.release(key, pid)
+
+
+def run_refresh(
+    ticker: str,
+    compact_type: str,
+    fetcher: Optional[HtmlFetcher] = None,
+) -> report_cache.Envelope:
+    """Fetch, classify the outcome, and always persist an envelope.
+
+    Returns the written envelope. ``fetcher`` is injectable for tests; the
+    outcome is one of ok / challenge / error — the previous "skip cache write on
+    empty result" path is gone, so an empty-but-successful fetch writes ``ok``.
+    """
+    prev = report_cache.read(ticker, compact_type)
+    pid = os.getpid()
+    try:
+        company_id = load_company_id(ticker)
+        _log(f"refresh worker pid={pid} {ticker}/{compact_type} edid={company_id}")
+        if fetcher is None:
+            docs = collect_documents(company_id, compact_type)
+        else:
+            docs = collect_documents(company_id, compact_type, fetcher)
+    except ChallengeError as exc:
+        return _record_failure(ticker, compact_type, Status.CHALLENGE, prev, str(exc))
+    except Exception as exc:  # unknown ticker / network / parse failure
+        return _record_failure(ticker, compact_type, Status.ERROR, prev, str(exc))
+
+    cache_items = docs_to_cache_items(docs)
+    env = report_cache.ok(cache_items, datetime.now())
+    report_cache.write(ticker, compact_type, env)
+    _log(f"refresh worker pid={pid} wrote ok {len(cache_items)} items")
+    return env
 
 
 if __name__ == "__main__":

@@ -45,6 +45,7 @@ The workflow automatically uses `curl_cffi` when available, falling back to stdl
 ## Environment Variables
 - `EDISCLOSURE_COOKIE` – paste cookies from an authenticated browser session if the site serves CAPTCHA pages.
 - `EDISCLOSURE_IMPERSONATE` – override the curl_cffi impersonation preset (defaults to `chrome124`).
+- `EDISCLOSURE_CACHE_DIR` – relocate the parsed-report cache and refresh lockfiles (defaults to a folder under the OS tmp dir). Tests point this at a throwaway directory.
 
 ## CLI Usage
 List RSBU or MSFO reports directly in the terminal:
@@ -93,6 +94,7 @@ chmod +x build_workflow.sh
 The script copies the Python sources, `tickers.csv`, and `info.plist` into `dist/workflow/` and zips everything into `dist/alfred-e-disclosure.alfredworkflow`.
 
 ## Testing Tips
+- Run the unit suite with `pytest` (no network needed — page fetching is behind an injectable seam and the cache uses a temp dir).
 - Run `python3 list_reports.py msfo STSB | jq` to confirm listing works.
 - Select any emitted item, copy its JSON payload, and feed it to `open_report.py --payload ...` to ensure downloads and caching succeed.
 - If e-disclosure responds with bot protection, grab cookies from your browser’s dev tools and set `EDISCLOSURE_COOKIE` before re-running the scripts.
