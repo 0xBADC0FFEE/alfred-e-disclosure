@@ -18,6 +18,7 @@ import urllib.request
 import urllib.response
 import zlib
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from html.parser import HTMLParser
@@ -25,7 +26,7 @@ from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 from urllib.parse import urljoin
 
-import armed_cookies
+import cache_dir
 import refresh_lock
 import relative_time_ru
 import report_cache
@@ -34,9 +35,9 @@ from report_cache import Status
 
 REFRESH_AGE_THRESHOLD_SECONDS = 3600
 
-# ServicePipe cookies set by challenge JS (not Set-Cookie). Harvested from the
-# browser context after a challenge clears, then handed off to curl_cffi.
-SERVICEPIPE_COOKIES = ("spsc", "spjs", "spid", "spca", "spcajs", "rndcaptcha")
+# Origin-wide mutex key guarding the persistent browser profile. Playwright
+# forbids two instances on one user_data_dir, so every open serialises on this.
+PROFILE_LOCK_KEY = "browser-profile"
 
 # The content marker whose appearance means the challenge is cleared.
 FILES_TABLE_SELECTOR = "table.files-table"
@@ -67,8 +68,22 @@ _cf_local = threading.local()  # per-thread cf_requests.Session
 _warned_no_cf = False
 _warned_stealthy_missing = False
 
+# Serialises browser opens *within* this process. The profile lockfile guards
+# it across processes; this guards МСФО's two concurrent page fetches, which
+# would otherwise open the one profile twice at once.
+_profile_lock = threading.Lock()
+
 
 BASE_URL = "https://www.e-disclosure.ru/portal/"
+
+
+def _profile_dir() -> Path:
+    """The persistent camoufox profile bridging the headed solve and the
+    headless refresh (separate processes): the solved ServicePipe session lives
+    here on disk, so a later launch reopens an already-armed browser state — no
+    cookie harvest, no curl_cffi handoff.
+    """
+    return cache_dir.root() / "camoufox-profile"
 
 
 class ChallengeError(Exception):
@@ -125,41 +140,23 @@ def _page_types(compact_type: str) -> Tuple[int, ...]:
     return (4, 3) if compact_type == "МСФО" else (3,)
 
 
-def _harvest_into(store: dict) -> Callable:
-    """Return a StealthyFetcher ``page_action`` that harvests ServicePipe cookies.
-
-    Reads the browser context's cookie jar (challenge JS sets the cookies there,
-    not via Set-Cookie) and copies the ServicePipe ones into ``store``.
-    """
-    def page_action(page):
-        try:
-            for cookie in page.context.cookies():
-                name = cookie.get("name")
-                if name in SERVICEPIPE_COOKIES:
-                    store[name] = cookie.get("value", "")
-        except Exception as exc:  # pragma: no cover - browser internals
-            _log(f"cookie harvest failed: {exc}")
-        return page
-
-    return page_action
-
-
 def _looks_like_missing_browser(exc: Exception) -> bool:
     """Whether ``exc`` reads like a missing stealth-browser binary (vs a real fault)."""
     msg = str(exc).lower()
     return any(marker in msg for marker in _MISSING_BROWSER_MARKERS)
 
 
-def _stealthy_arm(url: str, *, headless: bool, deadline_ms: int) -> Tuple[str, dict]:
-    """Single arming machinery: fetch ``url`` in a StealthyFetcher browser, wait
-    for the ``files-table`` marker (challenge cleared), then harvest the armed
-    cookies. Differs only by the ``headless`` flag — headless auto-clears Flow A;
-    headed (``headless=False``) lets a human clear Flow B.
+def _stealthy_arm(url: str, *, headless: bool, deadline_ms: int) -> str:
+    """Open ``url`` in a StealthyFetcher bound to the persistent profile and wait
+    for the ``files-table`` marker. Differs only by ``headless`` — headless
+    clears Flow A on its own; headed (``headless=False``) holds the window open
+    for a human to clear Flow B.
 
-    Returns ``(html, harvested_cookies)``. Cookies are harvested only once the
-    table appears, so a never-solved challenge yields an empty map. Raises
-    :class:`BrowserMissingError` when scrapling isn't installed or its browser
-    binary is missing.
+    The cleared ServicePipe session is written into the on-disk profile
+    (:func:`_profile_dir`), so a later process reopening the same profile is
+    already armed. Returns the page HTML; a never-cleared challenge yields the
+    challenge HTML (the caller detects it via :func:`_is_challenge_page`). Raises
+    :class:`BrowserMissingError` when scrapling or its browser binary is missing.
     """
     try:
         from scrapling.fetchers import StealthyFetcher  # type: ignore[import-not-found]
@@ -168,16 +165,12 @@ def _stealthy_arm(url: str, *, headless: bool, deadline_ms: int) -> Tuple[str, d
             "install: pip install 'scrapling[fetchers]' && scrapling install"
         ) from exc
 
-    harvested: dict = {}
-    harvest = _harvest_into(harvested)
-
     def solve(page):
         # scrapling runs page_action *before* its own wait_selector, so block on
-        # the table here — keeping the window open while Flow A clears (or the
-        # human clears Flow B) — then harvest the now-armed cookies. A timeout
-        # raises, which scrapling swallows, leaving ``harvested`` empty.
+        # the table here, keeping the window open while Flow A clears (or the
+        # human clears Flow B). A timeout raises, which scrapling swallows.
         page.wait_for_selector(FILES_TABLE_SELECTOR, timeout=deadline_ms)
-        return harvest(page)
+        return page
 
     _log(f"stealthy arm headless={headless} {url}")
     try:
@@ -187,6 +180,7 @@ def _stealthy_arm(url: str, *, headless: bool, deadline_ms: int) -> Tuple[str, d
             network_idle=True,
             humanize=True,
             spoof_fingerprint=True,
+            user_data_dir=str(_profile_dir()),
             timeout=deadline_ms + 30_000,
             page_action=solve,
         )
@@ -195,41 +189,72 @@ def _stealthy_arm(url: str, *, headless: bool, deadline_ms: int) -> Tuple[str, d
             raise BrowserMissingError(str(exc)) from exc
         raise
     html = getattr(page, "html_content", None) or getattr(page, "body", None) or ""
-    _log(f"stealthy arm done ({len(html)} bytes, {len(harvested)} cookies)")
-    return html, harvested
-
-
-def _stealthy_fetch_html(url: str) -> Optional[str]:
-    """Auto-arm fallback: headless StealthyFetcher clears Flow A by itself and
-    persists the armed cookies for a later curl_cffi refresh. Never raises — the
-    background refresh chain must degrade, not crash — so a missing browser just
-    returns ``None`` (warned once) and the caller serves stale/terminal state.
-    """
-    global _warned_stealthy_missing
-    try:
-        html, harvested = _stealthy_arm(
-            url, headless=True, deadline_ms=HEADLESS_ARM_DEADLINE_MS
-        )
-    except BrowserMissingError as exc:
-        if not _warned_stealthy_missing:
-            _log(f"stealth browser unavailable ({exc}) — run: scrapling install")
-            _warned_stealthy_missing = True
-        return None
-    except Exception as exc:  # noqa: BLE001 - background path must not crash
-        _log(f"stealthy fetch failed: {exc}")
-        return None
-    if harvested:
-        armed_cookies.save(harvested)
-        _log(f"auto-armed {len(harvested)} cookies")
+    _log(f"stealthy arm done ({len(html)} bytes)")
     return html
 
 
-def human_arm(ticker: str, compact_type: str) -> bool:
-    """Solve the challenge in a headed browser, then fill the cache via curl_cffi.
+@contextmanager
+def _profile_guard():
+    """Serialise access to the one browser profile, yielding whether to proceed.
 
-    The browser only arms (harvests ServicePipe cookies); curl_cffi does the
-    fetching. Persists the harvested session, then runs a normal refresh over
-    both filing types — one solve arms the whole origin. Returns True on success.
+    Yields ``False`` when another live process holds the profile — the caller
+    serves stale rather than opening a second instance on the same
+    ``user_data_dir`` (Playwright forbids that). Re-entrant within the owning
+    PID: a holder that already owns the lock (the human-arm mid-solve) proceeds
+    without re-acquiring or later releasing it. The in-process ``_profile_lock``
+    additionally serialises concurrent opens within one process — МСФО fans its
+    two page fetches through a thread pool.
+    """
+    with _profile_lock:
+        own = refresh_lock.owner(PROFILE_LOCK_KEY)
+        if own is not None and own != os.getpid():
+            _log(f"profile busy (pid={own}) — serving stale")
+            yield False
+            return
+        took = own is None and refresh_lock.acquire(PROFILE_LOCK_KEY)
+        if own is None and not took:
+            yield False  # lost the profile to another process
+            return
+        try:
+            yield True
+        finally:
+            if took:
+                refresh_lock.release(PROFILE_LOCK_KEY, os.getpid())
+
+
+def _stealthy_fetch_html(url: str) -> Optional[str]:
+    """Auto-arm fallback: a headless StealthyFetcher clears Flow A against the
+    persistent profile and returns the real listing. Never raises — the
+    background refresh chain must degrade, not crash. A profile held by another
+    process yields stale; a missing browser warns once. Both return ``None``.
+    """
+    global _warned_stealthy_missing
+    with _profile_guard() as proceed:
+        if not proceed:
+            return None
+        try:
+            return _stealthy_arm(
+                url, headless=True, deadline_ms=HEADLESS_ARM_DEADLINE_MS
+            )
+        except BrowserMissingError as exc:
+            if not _warned_stealthy_missing:
+                _log(f"stealth browser unavailable ({exc}) — run: scrapling install")
+                _warned_stealthy_missing = True
+            return None
+        except Exception as exc:  # noqa: BLE001 - background path must not crash
+            _log(f"stealthy fetch failed: {exc}")
+            return None
+
+
+def human_arm(ticker: str, compact_type: str) -> bool:
+    """Solve the challenge in a headed browser, filling the persistent profile,
+    then refresh both filing types through that armed profile.
+
+    The cleared session lives in the on-disk profile, so the normal refresh path
+    (curl_cffi → challenge → headless StealthyFetcher on the same profile) now
+    reaches the real listing. Returns True only if a refresh actually produced an
+    ``ok`` envelope — reaching the table but still getting a challenge on refresh
+    is a failure, not the old "harvest happened" false positive.
 
     Raises :class:`BrowserMissingError` when the stealth browser is unavailable.
     """
@@ -238,16 +263,20 @@ def human_arm(ticker: str, compact_type: str) -> bool:
     url = _files_url(company_id, page_type)
 
     _log(f"headed solve {url}")
-    _, cookies = _stealthy_arm(url, headless=False, deadline_ms=ARM_DEADLINE_MS)
-    if not cookies:
+    html = _stealthy_arm(url, headless=False, deadline_ms=ARM_DEADLINE_MS)
+    if _is_challenge_page(html):
+        _log("headed solve did not reach the files table")
         return False
-    armed_cookies.save(cookies)
-    _log(f"armed {ticker}/{compact_type}: {sorted(cookies)}")
 
-    # One arm serves both МСФО and РСБУ, so refill both caches now.
+    # One solve arms the profile for the whole origin, so refill both caches.
+    # Both refreshes must run (they fill different caches), so this can't
+    # collapse to a short-circuiting any().
+    armed = False
     for ct in ("МСФО", "РСБУ"):
-        run_refresh(ticker, ct)
-    return True
+        env = run_refresh(ticker, ct)
+        if env.is_ok:
+            armed = True
+    return armed
 
 
 @dataclass
@@ -506,18 +535,13 @@ def search_tickers(query: str, all_tickers: List[Tuple[str, str, str]]) -> List[
 
 
 def _resolve_cookie_header() -> Optional[str]:
-    """Cookie header for the fetching surface: manual override wins over armed.
+    """Manual cookie override for the fetching surface, if the user set one.
 
-    ``EDISCLOSURE_COOKIE`` stays a manual override; absent that, the armed store
-    (harvested from a solved challenge) supplies the ServicePipe cookies.
+    ``EDISCLOSURE_COOKIE`` stays a manual escape hatch; the armed session now
+    lives in the browser profile, not a cookie handoff, so there is nothing else
+    to inject here.
     """
-    override = os.getenv("EDISCLOSURE_COOKIE")
-    if override:
-        return override
-    armed = armed_cookies.load()
-    if armed:
-        return "; ".join(f"{name}={value}" for name, value in armed.items())
-    return None
+    return os.getenv("EDISCLOSURE_COOKIE") or None
 
 
 def fetch_table_html(company_id: str, doc_page_type: int) -> str:

@@ -11,7 +11,7 @@ implementation. See `list_reports.py` for the code.
 
 - **Flow A / PoW arming** — the computational challenge: a spinner interstitial
   whose JavaScript proof-of-work a *real browser* clears on its own, no human.
-  Bare `curl_cffi` (no JS engine) cannot. Arms the ServicePipe cookies.
+  Bare `curl_cffi` (no JS engine) cannot. Arms the persistent profile.
 
 - **Flow B / rotate-captcha** — the "Разверните картинку горизонтально" image
   challenge. Requires a **human** to solve (drag image upright). No working
@@ -20,36 +20,40 @@ implementation. See `list_reports.py` for the code.
   fetch path hits Flow B, so a human is in the loop every time it appears.
 
 - **ServicePipe cookies** — `spsc`, `spjs`, `spid` (also `spca`, `spcajs`,
-  `rndcaptcha`). Set by challenge JavaScript, *not* `Set-Cookie`. Once obtained
-  ("armed"), they authorise subsequent requests to the origin: one solve serves
-  many fetches until they expire. Portable from a real browser to `curl_cffi`
-  (this is what the manual `EDISCLOSURE_COOKIE` path already relies on).
+  `rndcaptcha`). Set by challenge JavaScript, *not* `Set-Cookie`, into the
+  browser context. Once cleared ("armed"), they authorise subsequent requests to
+  the origin until they expire. They stay bound to the browser's TLS/JS context,
+  so — as the failed cookie-handoff proved — they do **not** transplant into
+  `curl_cffi`; they live in the persistent profile instead.
 
-- **Armed session** — a request context (browser or `curl_cffi`) carrying valid
+- **Persistent profile** — a camoufox `user_data_dir` on disk
+  (`cache_dir.root()/camoufox-profile`) that every browser launch reuses. It is
+  the bridge across process boundaries: the headed human solve writes the armed
+  ServicePipe session into it, and a later headless refresh (a *different*
+  process) reopens the same profile already armed. One solve serves both
+  `type=4` and `type=3` and every refresh until the session dies. No cookie
+  harvest, no `curl_cffi` handoff.
+
+- **Armed session** — the profile (or a browser open on it) carrying valid
   ServicePipe cookies, so the origin returns real content, not a challenge.
 
-- **Harvest** — reading the ServicePipe cookies out of a browser context after a
-  human clears Flow B, so they can be reused elsewhere.
+- **Arming surface** — the browser (StealthyFetcher) bound to the persistent
+  profile that clears a challenge and does the real fetch. Runs **headless** in
+  the background refresh chain (clears Flow A automatically; fails on Flow B) and
+  **headed** for the human solve (Enter on the challenge row → human clears
+  Flow B). Same machinery, only the `headless` flag differs. Both share the one
+  profile, so access is serialised by an origin-wide lock (below).
 
-- **Arming surface** — the browser (StealthyFetcher) that clears a challenge and
-  acquires ServicePipe cookies. Runs **headless** in the background refresh chain
-  (clears Flow A automatically; fails on Flow B) and **headed** for the human
-  solve (Enter on the challenge row → human clears Flow B). Same machinery, only
-  the `headless` flag differs.
+- **Profile lock** — Playwright forbids two instances on one `user_data_dir`, so
+  a single origin-wide mutex (`refresh_lock` key `browser-profile`) guards every
+  browser open, re-entrant within the owning PID. A background worker that finds
+  the profile held by another process skips the browser and serves stale rather
+  than crashing.
 
-- **Fetching surface** — `curl_cffi`, which does the actual (fast) filing
-  fetches once armed. One arm serves both `type=4` and `type=3` and every
-  subsequent refresh until the cookies die.
-
-- **Handoff** — moving an armed session from the arming surface to the fetching
-  surface by harvesting the cookies and injecting them into `curl_cffi`.
-  Requires a matching Chrome TLS/HTTP2 fingerprint on the receiving side —
-  ServicePipe blocks a plain-Python TLS handshake regardless of cookies.
-
-- **Self-healing expiry** — armed cookies have no known TTL, so none is guessed.
-  When they die, the next fetch is simply a fresh challenge (`Status.CHALLENGE`),
-  which re-surfaces the solve row. A dead cookie produces the same state that
-  started the loop.
+- **Self-healing expiry** — the armed session has no known TTL, so none is
+  guessed. When it dies, the next fetch is simply a fresh challenge
+  (`Status.CHALLENGE`), which re-surfaces the solve row. A dead session produces
+  the same state that started the loop.
 
 ## Fetch terms
 

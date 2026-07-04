@@ -28,7 +28,7 @@ def test_arm_payload_requires_only_ticker_and_doctype():
 
 
 def test_run_arm_holds_and_releases_lock(monkeypatch):
-    key = list_reports.refresh_key(TICKER, "МСФО")
+    key = list_reports.PROFILE_LOCK_KEY
     held_during = {}
 
     def fake_human_arm(ticker, compact_type):
@@ -55,7 +55,7 @@ def test_run_arm_reports_missing_browser(monkeypatch):
 
 
 def test_run_arm_skips_when_worker_already_live(monkeypatch):
-    key = list_reports.refresh_key(TICKER, "МСФО")
+    key = list_reports.PROFILE_LOCK_KEY
     monkeypatch.setattr(refresh_lock, "is_refreshing", lambda k: True)
     called = []
     monkeypatch.setattr(list_reports, "human_arm", lambda t, c: called.append(1) or True)

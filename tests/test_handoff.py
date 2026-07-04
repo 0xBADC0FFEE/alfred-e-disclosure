@@ -1,22 +1,17 @@
-"""Handoff: the fetching surface's cookie header prefers a manual override,
-then falls back to the armed store (harvested from a solved challenge)."""
-import armed_cookies
+"""Fetching-surface cookie header: now just the manual override.
+
+The armed session lives in the persistent browser profile, not a harvested
+cookie store, so ``_resolve_cookie_header`` only honours ``EDISCLOSURE_COOKIE``.
+"""
 import list_reports
 
 
-def test_no_cookies_returns_none(monkeypatch):
+def test_no_cookie_returns_none(monkeypatch):
     monkeypatch.delenv("EDISCLOSURE_COOKIE", raising=False)
     assert list_reports._resolve_cookie_header() is None
 
 
-def test_armed_cookies_used_when_no_override(monkeypatch):
-    monkeypatch.delenv("EDISCLOSURE_COOKIE", raising=False)
-    armed_cookies.save({"spsc": "a", "spid": "b"})
-    assert list_reports._resolve_cookie_header() == "spsc=a; spid=b"
-
-
-def test_manual_override_wins_over_armed(monkeypatch):
-    armed_cookies.save({"spsc": "armed"})
+def test_manual_override_is_used(monkeypatch):
     monkeypatch.setenv("EDISCLOSURE_COOKIE", "manual=1")
     assert list_reports._resolve_cookie_header() == "manual=1"
 

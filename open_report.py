@@ -351,10 +351,10 @@ def save_pdf_to_downloads(pdf_path: Path, payload: ReportPayload) -> Path:
 def run_arm(payload: ReportPayload) -> int:
     """Human-arm: solve the challenge in a headed browser, then fill the cache.
 
-    Holds the refresh lock for the duration so the background worker can't race
-    the solve (which may take minutes while the human works).
+    Holds the origin-wide profile lock for the duration so a background worker
+    can't open the same profile while the human solves (which may take minutes).
     """
-    key = list_reports.refresh_key(payload.ticker, payload.doc_type)
+    key = list_reports.PROFILE_LOCK_KEY
     if not refresh_lock.acquire(key):
         print("Обновление уже идёт — подождите и повторите вызов.")
         return 0

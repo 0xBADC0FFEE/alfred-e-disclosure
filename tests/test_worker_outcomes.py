@@ -61,10 +61,10 @@ def test_empty_but_successful_fetch_still_writes_ok():
     assert env.items == []
 
 
-def test_armed_fetch_fills_cache_over_both_msfo_pages(normal_html):
-    # After a solve, run_refresh pulls with the armed session (Option B). МСФО
-    # reads both type=4 and type=3; the injected armed fetcher stands in for the
-    # armed curl_cffi and must produce an ok envelope covering both pages.
+def test_refresh_fills_cache_over_both_msfo_pages(normal_html):
+    # After a solve, run_refresh pulls through the armed profile. МСФО reads both
+    # type=4 and type=3; the injected fetcher stands in for that profile-armed
+    # fetch and must produce an ok envelope covering both pages.
     pages = []
 
     def fetcher(company_id, doc_page_type):

@@ -45,18 +45,28 @@ def _read_pid(p: Path) -> int | None:
         return None
 
 
-def is_refreshing(key: str) -> bool:
+def owner(key: str) -> int | None:
+    """PID of the live lock holder, or None — clearing a stale lockfile.
+
+    Unlike :func:`is_refreshing`, it returns the PID, so a caller can tell the
+    holder apart from itself: re-entrant profile access within one process
+    proceeds, a foreign process is skipped.
+    """
     p = _path(key)
     if not p.is_file():
-        return False
+        return None
     pid = _read_pid(p)
     if pid is None or not _pid_alive(pid):
         try:
             p.unlink()
         except FileNotFoundError:
             pass
-        return False
-    return True
+        return None
+    return pid
+
+
+def is_refreshing(key: str) -> bool:
+    return owner(key) is not None
 
 
 def acquire(key: str, pid: int | None = None) -> bool:

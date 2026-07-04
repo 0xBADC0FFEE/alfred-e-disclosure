@@ -9,7 +9,7 @@ Python helpers and an Alfred workflow for browsing and opening Russian e-disclos
 - Caches downloaded files under `~/tmp/alfred-e-disclosure/<TICKER>` and handles `zip`/`7z`/`rar`/direct `pdf`.
 - Falls back to stdlib networking but can impersonate Chrome when `curl_cffi` is available.
 - Auto-fallback на `Scrapling StealthyFetcher` (Patchright) при ServicePipe challenge на `e-disclosure.ru`.
-- Human-in-the-loop разблокировка капчи: на строке «Портал заблокировал запрос» ↵ открывает видимый браузер прямо на капче; после решения ServicePipe-куки собираются в `armed_cookies.json` и переиспользуются `curl_cffi`, пока не протухнут (⌘↵ — сбросить кэш и повторить).
+- Human-in-the-loop разблокировка капчи: на строке «Портал заблокировал запрос» ↵ открывает видимый браузер прямо на капче; после решения армленная сессия сохраняется в персистентном профиле camoufox (`<cache>/camoufox-profile`), который переиспользуют и фоновые headless-обновления, пока сессия не протухнет (⌘↵ — сбросить кэш и повторить).
 
 ## Repository Layout
 - `list_reports.py` – Alfred Script Filter / CLI that prints report candidates as JSON.
@@ -86,7 +86,7 @@ EDISCLOSURE_DEBUG=1 python3 open_report.py --payload '...'
 3. Type `TICKER [PERIOD_PREFIX]`, e.g. `STSB 2024` or `MOEX 2023Q4`.
 4. Press Enter on an item to download (if needed), extract/cache, and open the PDF.
 5. Hold `⌘` (Cmd) while pressing Enter to download/extract and copy the PDF to `~/Downloads` without opening it.
-6. If the portal shows a block/CAPTCHA row, press Enter to open a visible browser on the challenge, solve the rotate-CAPTCHA once, and the window closes itself when the table appears — the harvested session then fills the cache. `⌘`+Enter on that row just resets the cache and retries. Requires the stealth browser binary (`scrapling install`).
+6. If the portal shows a block/CAPTCHA row, press Enter to open a visible browser on the challenge, solve the rotate-CAPTCHA once, and the window closes itself when the table appears — the armed session persists in the camoufox profile and fills the cache. Background headless refreshes reuse that profile until the session expires. `⌘`+Enter on that row just resets the cache and retries. Requires the stealth browser binary (`scrapling install`).
 
 ## Build the Bundle
 ```bash
