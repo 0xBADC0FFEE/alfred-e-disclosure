@@ -236,7 +236,7 @@ Select a report to download, cache, and open the PDF.
     </dict>
   </dict>
   <key>version</key>
-  <integer>1</integer>
+  <string>1.1.0</string>
   <key>webaddress</key>
   <string>https://www.e-disclosure.ru/portal/</string>
 </dict>
