@@ -12,23 +12,55 @@ import argparse
 import csv
 import gzip
 import json
+import random
 import threading
 import urllib.request
 import urllib.response
 import zlib
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 from urllib.parse import urljoin
 
+import cache_dir
 import refresh_lock
 import relative_time_ru
 import report_cache
+import retry_policy
+from report_cache import Status
 
 REFRESH_AGE_THRESHOLD_SECONDS = 3600
+
+# Origin-wide mutex key guarding the persistent browser profile. Playwright
+# forbids two instances on one user_data_dir, so every open serialises on this.
+PROFILE_LOCK_KEY = "browser-profile"
+
+# The content marker whose appearance means the challenge is cleared.
+FILES_TABLE_SELECTOR = "table.files-table"
+
+# How long the arming browser waits for the table to appear (ms). The headed
+# solve gives the human minutes; the headless auto-arm only needs Flow A's PoW.
+ARM_DEADLINE_MS = 180_000
+HEADLESS_ARM_DEADLINE_MS = 20_000
+
+# Substrings that mark a "stealth browser binary is missing" failure (as opposed
+# to the scrapling package being absent), so we can point the user at
+# `patchright install chromium` instead of a cryptic launch error. StealthyFetcher
+# runs on patchright-chromium in scrapling 0.4.x (not camoufox), so the launch
+# error names chromium/playwright.
+_MISSING_BROWSER_MARKERS = (
+    "executable",
+    "doesn't exist",
+    "not found",
+    "no such file",
+    "chromium",
+    "playwright",
+    "install",
+)
 
 try:
     from curl_cffi import requests as cf_requests  # type: ignore[import-not-found]
@@ -39,52 +71,278 @@ _cf_local = threading.local()  # per-thread cf_requests.Session
 _warned_no_cf = False
 _warned_stealthy_missing = False
 
+# Serialises browser opens *within* this process. The profile lockfile guards
+# it across processes; this guards МСФО's two concurrent page fetches, which
+# would otherwise open the one profile twice at once.
+_profile_lock = threading.Lock()
+
 
 BASE_URL = "https://www.e-disclosure.ru/portal/"
 
 
-def _is_challenge_page(html: str) -> bool:
-    """ServicePipe Cybert anti-bot challenge — spinner page instead of real HTML.
-
-    Real e-disclosure pages embed ServicePipe tracking JS too, so detect by the
-    spinner div and absence of the actual files-table marker.
+def _profile_dir() -> Path:
+    """The persistent chromium profile bridging the headed solve and the headless
+    refresh (separate processes): StealthyFetcher opens it via Playwright's
+    ``launch_persistent_context``, so the solved ServicePipe session lives here on
+    disk and a later launch reopens an already-armed browser state — no cookie
+    harvest, no curl_cffi handoff. Chromium keeps the fingerprint stable across
+    launches (unlike camoufox), so the persistent dir alone survives the challenge.
     """
+    return cache_dir.root() / "browser-profile"
+
+
+class ChallengeError(Exception):
+    """Portal served an anti-bot challenge instead of the files table."""
+
+
+class BrowserMissingError(Exception):
+    """The stealth browser for the human-arm solve is not installed."""
+
+
+# Robo-check markers seen on ServicePipe block/CAPTCHA pages. Two forms are
+# served in the wild, so we match both: the classic ~2 KB spinner interstitial
+# (`id_spinner` / the `js-challenge-loader` mount / `is_captcha` options) and the
+# newer ~15 KB rotate-image CAPTCHA ("разверните картинку", robots NOINDEX).
+# A challenge is the absence of the `files-table` content marker *plus* any of
+# these. Bare "servicepipe" is excluded: real content pages embed its tracking JS.
+_CHALLENGE_MARKERS = (
+    "проверк",
+    "noindex",
+    "разверните картинку",
+    "id_spinner",
+    "js-challenge-loader",
+    "id_captcha_frame_div",
+    "is_captcha",
+)
+
+
+def _is_challenge_page(html: str) -> bool:
+    """True when ``html`` is an anti-bot challenge rather than the real listing."""
     if not html:
         return True
     if "files-table" in html:
         return False
     lowered = html.lower()
-    return "id_spinner" in lowered or len(html) < 5000
+    return any(marker in lowered for marker in _CHALLENGE_MARKERS)
 
 
 def _log(msg: str) -> None:
     print(f"[list_reports] {msg}", file=sys.stderr, flush=True)
 
 
-def _stealthy_fetch_html(url: str) -> Optional[str]:
-    """Fallback fetch through Patchright-backed StealthyFetcher (lazy import)."""
-    global _warned_stealthy_missing
-    _log(f"stealthy import…")
+def _files_url(company_id: str, page_type: int) -> str:
+    """URL of a company's filings listing for one portal page type."""
+    return f"{BASE_URL}files.aspx?id={company_id}&type={page_type}"
+
+
+def _page_types(compact_type: str) -> Tuple[int, ...]:
+    """Portal page types to read for a compact doc type.
+
+    МСФО (IFRS) sometimes appears on the РСБУ page, so it reads both type=4 and
+    type=3; РСБУ reads only type=3. The first entry is the primary page used for
+    arming (one arm serves the whole origin anyway).
+    """
+    return (4, 3) if compact_type == "МСФО" else (3,)
+
+
+def _looks_like_missing_browser(exc: Exception) -> bool:
+    """Whether ``exc`` reads like a missing stealth-browser binary (vs a real fault)."""
+    msg = str(exc).lower()
+    return any(marker in msg for marker in _MISSING_BROWSER_MARKERS)
+
+
+def _stealthy_arm(url: str, *, headless: bool, deadline_ms: int) -> str:
+    """Open ``url`` in a StealthyFetcher bound to the persistent profile and wait
+    for the ``files-table`` marker. Differs only by ``headless`` — headless
+    clears Flow A on its own; headed (``headless=False``) holds the window open
+    for a human to clear Flow B.
+
+    The cleared ServicePipe session is written into the on-disk profile
+    (:func:`_profile_dir`), so a later process reopening the same profile is
+    already armed. Returns the page HTML; a never-cleared challenge yields the
+    challenge HTML (the caller detects it via :func:`_is_challenge_page`). Raises
+    :class:`BrowserMissingError` when scrapling or its browser binary is missing.
+    """
     try:
         from scrapling.fetchers import StealthyFetcher  # type: ignore[import-not-found]
-    except ImportError:
-        if not _warned_stealthy_missing:
-            _log("scrapling NOT installed — install: pip install 'scrapling[fetchers]' && scrapling install")
-            _warned_stealthy_missing = True
-        return None
-    _log(f"stealthy fetch {url}")
-    page = StealthyFetcher.fetch(
-        url,
-        headless=True,
-        network_idle=True,
-        wait=12000,
-        humanize=True,
-        spoof_fingerprint=True,
-        timeout=90000,
-    )
+    except ImportError as exc:
+        raise BrowserMissingError(
+            "install: pip install 'scrapling[fetchers]' && patchright install chromium"
+        ) from exc
+
+    def solve(page):
+        # scrapling runs page_action *before* its own wait_selector, so block on
+        # the table here, keeping the window open while Flow A clears (or the
+        # human clears Flow B). A timeout raises, which scrapling swallows.
+        page.wait_for_selector(FILES_TABLE_SELECTOR, timeout=deadline_ms)
+        return page
+
+    _log(f"stealthy arm headless={headless} {url}")
+    try:
+        page = StealthyFetcher.fetch(
+            url,
+            headless=headless,
+            network_idle=True,
+            user_data_dir=str(_profile_dir()),
+            timeout=deadline_ms + 30_000,
+            page_action=solve,
+        )
+    except Exception as exc:  # noqa: BLE001
+        if _looks_like_missing_browser(exc):
+            raise BrowserMissingError(str(exc)) from exc
+        raise
     html = getattr(page, "html_content", None) or getattr(page, "body", None) or ""
-    _log(f"stealthy done ({len(html)} bytes)")
+    _log(f"stealthy arm done ({len(html)} bytes)")
     return html
+
+
+@contextmanager
+def _profile_guard():
+    """Serialise access to the one browser profile, yielding whether to proceed.
+
+    Yields ``False`` when another live process holds the profile — the caller
+    serves stale rather than opening a second instance on the same
+    ``user_data_dir`` (Playwright forbids that). Re-entrant within the owning
+    PID: a holder that already owns the lock (the human-arm mid-solve) proceeds
+    without re-acquiring or later releasing it. The in-process ``_profile_lock``
+    additionally serialises concurrent opens within one process — МСФО fans its
+    two page fetches through a thread pool.
+    """
+    with _profile_lock:
+        own = refresh_lock.owner(PROFILE_LOCK_KEY)
+        if own is not None and own != os.getpid():
+            _log(f"profile busy (pid={own}) — serving stale")
+            yield False
+            return
+        took = own is None and refresh_lock.acquire(PROFILE_LOCK_KEY)
+        if own is None and not took:
+            yield False  # lost the profile to another process
+            return
+        try:
+            yield True
+        finally:
+            if took:
+                refresh_lock.release(PROFILE_LOCK_KEY, os.getpid())
+
+
+def _stealthy_fetch_html(url: str) -> Optional[str]:
+    """Auto-arm fallback: a headless StealthyFetcher clears Flow A against the
+    persistent profile and returns the real listing. Never raises — the
+    background refresh chain must degrade, not crash. A profile held by another
+    process yields stale; a missing browser warns once. Both return ``None``.
+    """
+    global _warned_stealthy_missing
+    with _profile_guard() as proceed:
+        if not proceed:
+            return None
+        try:
+            return _stealthy_arm(
+                url, headless=True, deadline_ms=HEADLESS_ARM_DEADLINE_MS
+            )
+        except BrowserMissingError as exc:
+            if not _warned_stealthy_missing:
+                _log(f"stealth browser unavailable ({exc}) — run: scrapling install")
+                _warned_stealthy_missing = True
+            return None
+        except Exception as exc:  # noqa: BLE001 - background path must not crash
+            _log(f"stealthy fetch failed: {exc}")
+            return None
+
+
+def _arm_page_types() -> Tuple[int, ...]:
+    """Every portal page type both caches need, highest first (type=4 leads so
+    the human solves on the МСФО page). One headed solve harvests them all."""
+    wanted = {*_page_types("МСФО"), *_page_types("РСБУ")}
+    return tuple(sorted(wanted, reverse=True))
+
+
+def _headed_harvest(
+    company_id: str, page_types: Tuple[int, ...], deadline_ms: int
+) -> Dict[int, str]:
+    """Open one headed StealthyFetcher on the persistent profile, let the human
+    clear the challenge on the first page, then walk the remaining page types in
+    the *same armed context*, grabbing each listing's HTML.
+
+    ServicePipe re-challenges a headless relaunch even with the cleared cookies on
+    disk — the profile persists and a headed reopen sails through, but the headless
+    fingerprint is rejected. So the refresh can't hand off to a background headless
+    fetch; harvesting every needed page inside the live headed session sidesteps
+    that: same fingerprint, one solve. Returns ``{page_type: html}``. Raises
+    :class:`BrowserMissingError` when the stealth browser is unavailable.
+    """
+    try:
+        from scrapling.fetchers import StealthyFetcher  # type: ignore[import-not-found]
+    except ImportError as exc:
+        raise BrowserMissingError(
+            "install: pip install 'scrapling[fetchers]' && patchright install chromium"
+        ) from exc
+
+    first, *rest = page_types
+    harvested: Dict[int, str] = {}
+
+    def solve(page):
+        # scrapling runs page_action before its own wait, so block here for the
+        # human to clear the challenge on the first page, then reuse the armed
+        # context for the rest (no further challenge — proven for a headed reopen).
+        page.wait_for_selector(FILES_TABLE_SELECTOR, timeout=deadline_ms)
+        harvested[first] = page.content()
+        for page_type in rest:
+            page.goto(_files_url(company_id, page_type), wait_until="load")
+            page.wait_for_selector(
+                FILES_TABLE_SELECTOR, timeout=HEADLESS_ARM_DEADLINE_MS
+            )
+            harvested[page_type] = page.content()
+        return page
+
+    _log(f"headed harvest types={page_types} id={company_id}")
+    try:
+        StealthyFetcher.fetch(
+            _files_url(company_id, first),
+            headless=False,
+            network_idle=True,
+            user_data_dir=str(_profile_dir()),
+            timeout=deadline_ms + 30_000,
+            page_action=solve,
+        )
+    except Exception as exc:  # noqa: BLE001
+        if _looks_like_missing_browser(exc):
+            raise BrowserMissingError(str(exc)) from exc
+        raise
+    _log(f"headed harvest done: {{{', '.join(f'{k}:{len(v)}b' for k, v in harvested.items())}}}")
+    return harvested
+
+
+def human_arm(ticker: str, compact_type: str) -> bool:
+    """Solve the challenge once in a headed browser and fill both caches from that
+    same armed session.
+
+    ServicePipe rejects a headless relaunch even against the armed on-disk profile,
+    so the listings are scraped inside the live headed window (see
+    :func:`_headed_harvest`) rather than via a headless refresh. Returns True only
+    if a refresh actually produced an ``ok`` envelope — reaching the table but
+    parsing nothing usable is a failure, not the old "harvest happened" false
+    positive. ``compact_type`` is unused: one solve arms the whole origin, so both
+    caches refill regardless of which type the user clicked.
+
+    Raises :class:`BrowserMissingError` when the stealth browser is unavailable.
+    """
+    company_id = load_company_id(ticker)
+    harvested = _headed_harvest(company_id, _arm_page_types(), ARM_DEADLINE_MS)
+    if not harvested or any(_is_challenge_page(h) for h in harvested.values()):
+        _log("headed solve did not reach the files table")
+        return False
+
+    def armed_fetcher(_company_id: str, page_type: int) -> str:
+        return harvested.get(page_type, "")
+
+    # Both refreshes must run (they fill different caches), so this can't
+    # collapse to a short-circuiting any().
+    armed = False
+    for ct in ("МСФО", "РСБУ"):
+        env = run_refresh(ticker, ct, fetcher=armed_fetcher)
+        if env.is_ok:
+            armed = True
+    return armed
 
 
 @dataclass
@@ -295,12 +553,15 @@ def decode_http_body(resp: urllib.response.addinfourl) -> str:
     return raw.decode(charset, errors="ignore")
 
 
+class UnknownTickerError(Exception):
+    """Ticker has no e-disclosure company id in tickers.csv."""
+
+
 def load_company_id(ticker: str) -> str:
     ticker_up = ticker.upper()
     csv_path = Path(__file__).resolve().parent / "tickers.csv"
     if not csv_path.is_file():
-        print(f"Ticker mapping file not found: {csv_path}", file=sys.stderr)
-        sys.exit(1)
+        raise UnknownTickerError(f"Ticker mapping file not found: {csv_path}")
 
     with csv_path.open(newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
@@ -309,8 +570,7 @@ def load_company_id(ticker: str) -> str:
                 company_id = row.get("EDID")
                 if company_id:
                     return company_id
-    print(f"Unknown ticker: {ticker}", file=sys.stderr)
-    sys.exit(1)
+    raise UnknownTickerError(f"Unknown ticker: {ticker}")
 
 
 def load_tickers() -> List[Tuple[str, str, str]]:
@@ -340,8 +600,18 @@ def search_tickers(query: str, all_tickers: List[Tuple[str, str, str]]) -> List[
     return [ticker for ticker in all_tickers if ticker[0].startswith(query_up)]
 
 
+def _resolve_cookie_header() -> Optional[str]:
+    """Manual cookie override for the fetching surface, if the user set one.
+
+    ``EDISCLOSURE_COOKIE`` stays a manual escape hatch; the armed session now
+    lives in the browser profile, not a cookie handoff, so there is nothing else
+    to inject here.
+    """
+    return os.getenv("EDISCLOSURE_COOKIE") or None
+
+
 def fetch_table_html(company_id: str, doc_page_type: int) -> str:
-    url = f"{BASE_URL}files.aspx?id={company_id}&type={doc_page_type}"
+    url = _files_url(company_id, doc_page_type)
     # e-disclosure may return anti-bot/captcha pages to non-browser clients.
     # We try to mimic a browser as much as possible and, optionally, allow the
     # user to pass real browser cookies via the EDISCLOSURE_COOKIE env var.
@@ -372,7 +642,7 @@ def fetch_table_html(company_id: str, doc_page_type: int) -> str:
         "sec-ch-ua-mobile": "?0",
         'sec-ch-ua-platform': '"macOS"',
     }
-    cookie = os.getenv("EDISCLOSURE_COOKIE")
+    cookie = _resolve_cookie_header()
     if cookie:
         headers["Cookie"] = cookie
 
@@ -412,29 +682,39 @@ def fetch_table_html(company_id: str, doc_page_type: int) -> str:
     return html
 
 
-def collect_documents(company_id: str, wanted_compact_type: str) -> List[Document]:
+HtmlFetcher = Callable[[str, int], str]
+
+
+def collect_documents(
+    company_id: str,
+    wanted_compact_type: str,
+    fetcher: HtmlFetcher = fetch_table_html,
+) -> List[Document]:
     """
     Collect documents of a certain compact type ('МСФО' or 'РСБУ').
 
     For 'МСФО' we look both at type=4 and type=3 pages because
     sometimes IFRS reports appear on the RSBU page.
     For 'РСБУ' we use only type=3.
+
+    ``fetcher`` is injectable so tests can drive fixtures without the network.
+    Raises :class:`ChallengeError` if any page comes back as an anti-bot
+    challenge; network/parse failures propagate to the caller.
     """
     docs: List[Document] = []
 
-    if wanted_compact_type == "МСФО":
-        page_types = (4, 3)
-    else:
-        page_types = (3,)
+    page_types = _page_types(wanted_compact_type)
 
     _log(f"collect id={company_id} types={page_types}")
     if len(page_types) > 1:
         with ThreadPoolExecutor(max_workers=len(page_types)) as executor:
-            htmls = list(executor.map(lambda t: fetch_table_html(company_id, t), page_types))
+            htmls = list(executor.map(lambda t: fetcher(company_id, t), page_types))
     else:
-        htmls = [fetch_table_html(company_id, page_types[0])]
+        htmls = [fetcher(company_id, page_types[0])]
 
     for page_type, html in zip(page_types, htmls):
+        if _is_challenge_page(html):
+            raise ChallengeError(f"challenge on type={page_type}")
         parser = FilesTableParser()
         parser.feed(html)
         _log(f"parsed type={page_type}: {len(parser.rows)} rows")
@@ -492,7 +772,7 @@ def docs_to_cache_items(docs: List[Document]) -> List[dict]:
     ]
 
 
-def _refresh_key(ticker: str, doc_type: str) -> str:
+def refresh_key(ticker: str, doc_type: str) -> str:
     return f"{ticker.upper()}_{doc_type}"
 
 
@@ -725,40 +1005,75 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     compact_type = "МСФО" if args.command == "msfo" else "РСБУ"
 
-    cache_items: Optional[List[dict]] = None
-    cache_age_label: Optional[str] = None
-    cache_age_seconds: Optional[float] = None
     now = datetime.now()
-
     env = report_cache.read(ticker, compact_type)
-    if env is not None:
-        items = env.get("items")
-        fetched_at = report_cache.fetched_at(env)
-        if isinstance(items, list) and fetched_at is not None:
-            cache_items = items
-            cache_age_seconds = (now - fetched_at).total_seconds()
-            cache_age_label = relative_time_ru.format(now, fetched_at)
-            _log(f"cache hit {ticker}/{compact_type} age={cache_age_label} items={len(items)}")
+    key = refresh_key(ticker, compact_type)
 
-    key = _refresh_key(ticker, compact_type)
-    needs_refresh = cache_items is None or (
-        cache_age_seconds is not None and cache_age_seconds >= REFRESH_AGE_THRESHOLD_SECONDS
-    )
-    if needs_refresh:
+    if _should_spawn(env, now):
         spawn_argv = _refresh_worker_argv(args.command, ticker, compact_type)
-        spawned = refresh_lock.spawn_refresh(key, spawn_argv)
-        if spawned:
-            _log(f"spawned refresh worker {key}")
+        if refresh_lock.spawn_refresh(key, spawn_argv):
+            _log(f"spawned refresh worker {key} ({_spawn_reason(env, now)})")
     worker_live = refresh_lock.is_refreshing(key)
 
-    if cache_items is None:
-        data = _build_placeholder(ticker, worker_live)
-    else:
-        data = build_script_filter_items(cache_items, ticker, period, cache_age_label, compact_type)
+    data = _build_output(env, ticker, period, compact_type, now, worker_live)
+    json.dump(data, sys.stdout, ensure_ascii=False, indent=2)
+
+
+def _should_spawn(env: Optional[report_cache.Envelope], now: datetime) -> bool:
+    """Whether ``main()`` may spawn a refresh worker for this key right now.
+
+    The cooldown lives here: a fresh failure envelope whose ``next_retry_at`` is
+    still in the future is left alone, so we don't respawn a worker on every tick.
+    ``spawn_refresh`` separately refuses to double-spawn while one is live.
+    """
+    if env is None:
+        return True
+    if env.is_ok:
+        if env.fetched_at is None:
+            return True
+        age = (now - env.fetched_at).total_seconds()
+        return age >= REFRESH_AGE_THRESHOLD_SECONDS
+    # Failure envelope: only once the backoff cooldown has elapsed.
+    return env.next_retry_at is None or now >= env.next_retry_at
+
+
+def _spawn_reason(env: Optional[report_cache.Envelope], now: datetime) -> str:
+    if env is None:
+        return "cold cache"
+    if env.is_ok:
+        return "stale cache"
+    return f"retry after cooldown (attempt {env.attempts + 1})"
+
+
+def _build_output(
+    env: Optional[report_cache.Envelope],
+    ticker: str,
+    period: Optional[str],
+    compact_type: str,
+    now: datetime,
+    worker_live: bool,
+) -> dict:
+    have_items = env is not None and env.has_items
+    if have_items:
+        cache_age_label = relative_time_ru.format(now, env.fetched_at)
+        data = build_script_filter_items(
+            env.items, ticker, period, cache_age_label, compact_type
+        )
+        stale_failed = not env.is_ok and not worker_live
+        if stale_failed:
+            data["items"].insert(0, _stale_badge_item(cache_age_label))
         if worker_live:
             data["rerun"] = 0.5
+        return data
 
-    json.dump(data, sys.stdout, ensure_ascii=False, indent=2)
+    # No usable items yet.
+    if worker_live:
+        return _build_placeholder(ticker, worker_live=True)
+    if env is not None and not env.is_ok:
+        return _build_error_item(ticker, env.status, compact_type)
+    # Cold cache and the worker didn't come up (e.g. spawn failed): show the
+    # placeholder once, without a rerun so it can't spin forever.
+    return _build_placeholder(ticker, worker_live=False)
 
 
 def _refresh_worker_argv(command: str, ticker: str, doc_type: str) -> List[str]:
@@ -786,6 +1101,74 @@ def _build_placeholder(ticker: str, worker_live: bool) -> dict:
     return data
 
 
+def _stale_badge_item(cache_age_label: str) -> dict:
+    return {
+        "title": "⚠︎ Обновление не удалось",
+        "subtitle": f"Показаны сохранённые данные · Кэш: {cache_age_label}",
+        "valid": False,
+    }
+
+
+def _build_error_item(ticker: str, status: Status, doc_type: str) -> dict:
+    """Terminal error row (no ``rerun``) distinguishing block from network fault.
+
+    On a **challenge** the block is a captcha a human can clear: ↵ opens a headed
+    browser to solve it (arm); ⌘↵ falls back to the cache-reset retry. On a plain
+    network **error** both ↵ and ⌘↵ carry ``force_refresh`` (reset + retry).
+    """
+    ticker_up = ticker.upper()
+    retry_arg = json.dumps(
+        {"ticker": ticker_up, "doc_type": doc_type, "force_refresh": True},
+        ensure_ascii=False,
+    )
+    retry_mod = {
+        "arg": retry_arg,
+        "subtitle": "↻ Сбросить кэш и попробовать снова",
+        "valid": True,
+    }
+
+    if status is Status.CHALLENGE:
+        arm_arg = json.dumps(
+            {"ticker": ticker_up, "doc_type": doc_type, "arm": True},
+            ensure_ascii=False,
+        )
+        item = {
+            "title": f"Портал заблокировал запрос — {ticker_up}",
+            "subtitle": "e-disclosure.ru показал проверку. ↵ — пройти проверку в браузере · ⌘↵ — сбросить кэш.",
+            "arg": arm_arg,
+            "valid": True,
+            "mods": {"cmd": retry_mod},
+        }
+    else:
+        item = {
+            "title": f"Не удалось загрузить отчёты — {ticker_up}",
+            "subtitle": "Сетевая ошибка. ↵ или ⌘↵ — попробовать снова.",
+            "arg": retry_arg,
+            "valid": True,
+            "mods": {"cmd": retry_mod},
+        }
+    return {"items": [item]}
+
+
+def _record_failure(
+    ticker: str,
+    doc_type: str,
+    status: Status,
+    prev: Optional[report_cache.Envelope],
+    reason: str,
+) -> report_cache.Envelope:
+    now = datetime.now()
+    attempts = (prev.attempts if prev is not None else 0) + 1
+    nra = retry_policy.next_retry_at(attempts, now, random.random())
+    env = report_cache.failure(status, now, nra, prev)
+    report_cache.write(ticker, doc_type, env)
+    _log(
+        f"refresh worker {status.value} attempt={attempts} "
+        f"next_retry={nra.isoformat()} reason={reason}"
+    )
+    return env
+
+
 def _run_refresh_worker(args: argparse.Namespace) -> None:
     ticker = args.pos_ticker
     if args.alfred_query:
@@ -795,22 +1178,44 @@ def _run_refresh_worker(args: argparse.Namespace) -> None:
         _log("refresh: ticker required")
         return
     compact_type = "МСФО" if args.command == "msfo" else "РСБУ"
-    key = _refresh_key(ticker, compact_type)
+    key = refresh_key(ticker, compact_type)
+    pid = os.getpid()
+    try:
+        run_refresh(ticker, compact_type)
+    finally:
+        refresh_lock.release(key, pid)
+
+
+def run_refresh(
+    ticker: str,
+    compact_type: str,
+    fetcher: Optional[HtmlFetcher] = None,
+) -> report_cache.Envelope:
+    """Fetch, classify the outcome, and always persist an envelope.
+
+    Returns the written envelope. ``fetcher`` is injectable for tests; the
+    outcome is one of ok / challenge / error — the previous "skip cache write on
+    empty result" path is gone, so an empty-but-successful fetch writes ``ok``.
+    """
+    prev = report_cache.read(ticker, compact_type)
     pid = os.getpid()
     try:
         company_id = load_company_id(ticker)
         _log(f"refresh worker pid={pid} {ticker}/{compact_type} edid={company_id}")
-        docs = collect_documents(company_id, compact_type)
-        cache_items = docs_to_cache_items(docs)
-        if not cache_items:
-            _log(f"refresh worker pid={pid} empty result, skipping cache write")
+        if fetcher is None:
+            docs = collect_documents(company_id, compact_type)
         else:
-            report_cache.write(ticker, compact_type, cache_items, datetime.now())
-            _log(f"refresh worker pid={pid} wrote {len(cache_items)} items")
-    except Exception as exc:  # pragma: no cover - worker errors
-        _log(f"refresh worker pid={pid} failed: {exc}")
-    finally:
-        refresh_lock.release(key, pid)
+            docs = collect_documents(company_id, compact_type, fetcher)
+    except ChallengeError as exc:
+        return _record_failure(ticker, compact_type, Status.CHALLENGE, prev, str(exc))
+    except Exception as exc:  # unknown ticker / network / parse failure
+        return _record_failure(ticker, compact_type, Status.ERROR, prev, str(exc))
+
+    cache_items = docs_to_cache_items(docs)
+    env = report_cache.ok(cache_items, datetime.now())
+    report_cache.write(ticker, compact_type, env)
+    _log(f"refresh worker pid={pid} wrote ok {len(cache_items)} items")
+    return env
 
 
 if __name__ == "__main__":

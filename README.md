@@ -9,6 +9,7 @@ Python helpers and an Alfred workflow for browsing and opening Russian e-disclos
 - Caches downloaded files under `~/tmp/alfred-e-disclosure/<TICKER>` and handles `zip`/`7z`/`rar`/direct `pdf`.
 - Falls back to stdlib networking but can impersonate Chrome when `curl_cffi` is available.
 - Auto-fallback на `Scrapling StealthyFetcher` (Patchright) при ServicePipe challenge на `e-disclosure.ru`.
+- Human-in-the-loop разблокировка капчи: на строке «Портал заблокировал запрос» ↵ открывает видимый браузер прямо на капче; после решения армленная сессия сохраняется в персистентном профиле camoufox (`<cache>/camoufox-profile`), который переиспользуют и фоновые headless-обновления, пока сессия не протухнет (⌘↵ — сбросить кэш и повторить).
 
 ## Repository Layout
 - `list_reports.py` – Alfred Script Filter / CLI that prints report candidates as JSON.
@@ -45,6 +46,7 @@ The workflow automatically uses `curl_cffi` when available, falling back to stdl
 ## Environment Variables
 - `EDISCLOSURE_COOKIE` – paste cookies from an authenticated browser session if the site serves CAPTCHA pages.
 - `EDISCLOSURE_IMPERSONATE` – override the curl_cffi impersonation preset (defaults to `chrome124`).
+- `EDISCLOSURE_CACHE_DIR` – relocate the parsed-report cache and refresh lockfiles (defaults to a folder under the OS tmp dir). Tests point this at a throwaway directory.
 
 ## CLI Usage
 List RSBU or MSFO reports directly in the terminal:
@@ -84,6 +86,7 @@ EDISCLOSURE_DEBUG=1 python3 open_report.py --payload '...'
 3. Type `TICKER [PERIOD_PREFIX]`, e.g. `STSB 2024` or `MOEX 2023Q4`.
 4. Press Enter on an item to download (if needed), extract/cache, and open the PDF.
 5. Hold `⌘` (Cmd) while pressing Enter to download/extract and copy the PDF to `~/Downloads` without opening it.
+6. If the portal shows a block/CAPTCHA row, press Enter to open a visible browser on the challenge, solve the rotate-CAPTCHA once, and the window closes itself when the table appears — the armed session persists in the camoufox profile and fills the cache. Background headless refreshes reuse that profile until the session expires. `⌘`+Enter on that row just resets the cache and retries. Requires the stealth browser binary (`scrapling install`).
 
 ## Build the Bundle
 ```bash
@@ -93,6 +96,7 @@ chmod +x build_workflow.sh
 The script copies the Python sources, `tickers.csv`, and `info.plist` into `dist/workflow/` and zips everything into `dist/alfred-e-disclosure.alfredworkflow`.
 
 ## Testing Tips
+- Run the unit suite with `pytest` (no network needed — page fetching is behind an injectable seam and the cache uses a temp dir).
 - Run `python3 list_reports.py msfo STSB | jq` to confirm listing works.
 - Select any emitted item, copy its JSON payload, and feed it to `open_report.py --payload ...` to ensure downloads and caching succeed.
 - If e-disclosure responds with bot protection, grab cookies from your browser’s dev tools and set `EDISCLOSURE_COOKIE` before re-running the scripts.

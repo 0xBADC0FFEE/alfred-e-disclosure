@@ -9,22 +9,15 @@ from __future__ import annotations
 import errno
 import os
 import subprocess
-import tempfile
 from pathlib import Path
 from typing import Sequence
 
-_DIR_NAME = "alfred-e-disclosure-cache"
-
-
-def _dir() -> Path:
-    d = Path(tempfile.gettempdir()) / _DIR_NAME
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+import cache_dir
 
 
 def _path(key: str) -> Path:
     safe = key.replace("/", "_")
-    return _dir() / f"{safe}.lock"
+    return cache_dir.root() / f"{safe}.lock"
 
 
 def _pid_alive(pid: int) -> bool:
@@ -52,16 +45,44 @@ def _read_pid(p: Path) -> int | None:
         return None
 
 
-def is_refreshing(key: str) -> bool:
+def owner(key: str) -> int | None:
+    """PID of the live lock holder, or None — clearing a stale lockfile.
+
+    Unlike :func:`is_refreshing`, it returns the PID, so a caller can tell the
+    holder apart from itself: re-entrant profile access within one process
+    proceeds, a foreign process is skipped.
+    """
     p = _path(key)
     if not p.is_file():
-        return False
+        return None
     pid = _read_pid(p)
     if pid is None or not _pid_alive(pid):
         try:
             p.unlink()
         except FileNotFoundError:
             pass
+        return None
+    return pid
+
+
+def is_refreshing(key: str) -> bool:
+    return owner(key) is not None
+
+
+def acquire(key: str, pid: int | None = None) -> bool:
+    """Claim the lock for an in-process holder (e.g. the human-arm solve).
+
+    Returns True if the key was free and is now held by ``pid`` (default: this
+    process). Mirrors ``spawn_refresh``'s no-double-spawn guard so a background
+    worker won't run while a human is solving the captcha.
+    """
+    if is_refreshing(key):
+        return False
+    if pid is None:
+        pid = os.getpid()
+    try:
+        _path(key).write_text(str(pid), encoding="utf-8")
+    except OSError:
         return False
     return True
 
