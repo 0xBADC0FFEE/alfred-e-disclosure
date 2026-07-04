@@ -1,102 +1,78 @@
 # Alfred e-Disclosure Workflow
 
-Python helpers and an Alfred workflow for browsing and opening Russian e-disclosure (e-disclosure.ru) financial reports. The project exposes the same logic as a CLI and as Alfred keywords so you can quickly list RSBU or MSFO filings, filter by period, and open cached PDFs with one keystroke.
-
-## Features
-- Maps short tickers to the portal company IDs stored in `tickers.csv`.
-- Normalizes verbose period names (`I квартал 2024` → `2024Q1`, `2024, 9 месяцев` → `2024M9`).
-- Shows publish dates and document type badges (`МСФО` / `РСБУ`) sorted by newest first.
-- Caches downloaded files under `~/tmp/alfred-e-disclosure/<TICKER>` and handles `zip`/`7z`/`rar`/direct `pdf`.
-- Falls back to stdlib networking but can impersonate Chrome when `curl_cffi` is available.
-- Auto-fallback на `Scrapling StealthyFetcher` (Patchright) при ServicePipe challenge на `e-disclosure.ru`.
-- Human-in-the-loop разблокировка капчи: на строке «Портал заблокировал запрос» ↵ открывает видимый браузер прямо на капче; после решения армленная сессия сохраняется в персистентном профиле camoufox (`<cache>/camoufox-profile`), который переиспользуют и фоновые headless-обновления, пока сессия не протухнет (⌘↵ — сбросить кэш и повторить).
-
-## Repository Layout
-- `list_reports.py` – Alfred Script Filter / CLI that prints report candidates as JSON.
-- `open_report.py` – Downloader/opener CLI used by Alfred when an item is selected.
-- `tickers.csv` – Ticker → e-disclosure company ID mapping; extend it as needed.
-- `info.plist` – Workflow definition consumed by Alfred.
-- `build_workflow.sh` – Packs the workflow into `dist/alfred-e-disclosure.alfredworkflow`.
+An Alfred workflow for browsing and opening Russian e-disclosure
+(e-disclosure.ru) financial reports. As of `2.0.0` it is a **thin wrapper** around
+the globally installed [`edisclosure`](https://github.com/0xBADC0FFEE/edisclosure)
+CLI: the workflow does no fetching, anti-bot handling, caching, or extraction of
+its own — it shells out to the CLI and reshapes its JSON into Alfred rows.
 
 ## Requirements
-- macOS with Alfred 5 (Powerpack) for workflow usage.
-- Python 3.10+ (the scripts rely only on stdlib by default).
-- For `rar`: `bsdtar` (default on macOS) or `unrar`.
 
-## Development Setup
-For better TLS fingerprinting (recommended), install the optional dependency:
+- macOS with Alfred 5 (Powerpack).
+- System `python3` (3.10+). The wrapper is **stdlib only** — no venv, no deps.
+- The `edisclosure` CLI on your `PATH`:
 
-```bash
-# Create virtual environment
-python3 -m venv .venv
-source .venv/bin/activate
+  ```bash
+  uv tool install edisclosure    # drops a shim on ~/.local/bin
+  ```
 
-# Install dependencies
-pip install -r requirements.txt
+  The workflow finds the CLI even under Alfred's truncated `PATH` (falls back to
+  `~/.local/bin/edisclosure`) and shows a clear "CLI не установлен" row if it is
+  missing.
 
-# One-time: install Patchright browser binaries used by StealthyFetcher fallback
-scrapling install
+## Usage
 
-# Build the workflow bundle with dependencies included
-./build_workflow.sh
-```
-
-The workflow automatically uses `curl_cffi` when available, falling back to stdlib networking otherwise.
-
-## Environment Variables
-- `EDISCLOSURE_COOKIE` – paste cookies from an authenticated browser session if the site serves CAPTCHA pages.
-- `EDISCLOSURE_IMPERSONATE` – override the curl_cffi impersonation preset (defaults to `chrome124`).
-- `EDISCLOSURE_CACHE_DIR` – relocate the parsed-report cache and refresh lockfiles (defaults to a folder under the OS tmp dir). Tests point this at a throwaway directory.
-
-## CLI Usage
-List RSBU or MSFO reports directly in the terminal:
-```bash
-python3 list_reports.py msfo STSB         # list all MSFO reports for STSB
-python3 list_reports.py rsbu MOEX 2024    # only RSBU reports whose period starts with 2024
-python3 list_reports.py msfo MRKP --alfred-query "MRKP 2023Q4"
-```
-
-The script prints Alfred-ready JSON; pipe it through `jq` for readability.
-
-Open a report (uses the JSON emitted by `list_reports.py`):
-```bash
-python3 open_report.py \
-  --ticker STSB \
-  --period 2024Q1 \
-  --doc-type МСФО \
-  --publish-date 2024-05-15 \
-  --url https://www.e-disclosure.ru/.../report.zip
-```
-
-When invoked from Alfred you normally pass the entire payload:
-```bash
-python3 open_report.py --payload '{"ticker":"STSB","url":"...","period":"2024Q1","doc_type":"МСФО","publish_date":"2024-05-15"}'
-```
-
-Both scripts honor the environment variables above and reuse cached archive/PDF files.
-
-Debug detected file type during open/download flow:
-```bash
-EDISCLOSURE_DEBUG=1 python3 open_report.py --payload '...'
-```
-
-## Alfred Workflow
 1. Import `dist/alfred-e-disclosure.alfredworkflow` into Alfred.
-2. Use the `msfo` keyword for IFRS reports or `rsbu` for Russian GAAP.
-3. Type `TICKER [PERIOD_PREFIX]`, e.g. `STSB 2024` or `MOEX 2023Q4`.
-4. Press Enter on an item to download (if needed), extract/cache, and open the PDF.
-5. Hold `⌘` (Cmd) while pressing Enter to download/extract and copy the PDF to `~/Downloads` without opening it.
-6. If the portal shows a block/CAPTCHA row, press Enter to open a visible browser on the challenge, solve the rotate-CAPTCHA once, and the window closes itself when the table appears — the armed session persists in the camoufox profile and fills the cache. Background headless refreshes reuse that profile until the session expires. `⌘`+Enter on that row just resets the cache and retries. Requires the stealth browser binary (`scrapling install`).
+2. Type a keyword and a ticker:
+   - `msfo TICKER [PERIOD]` — IFRS reports
+   - `rsbu TICKER [PERIOD]` — Russian GAAP reports
+   - `annual TICKER [PERIOD]` — annual reports
+3. A bare ticker prefix autocompletes matching companies; add a space (or a
+   period) to list reports, e.g. `msfo LKOH` or `rsbu MOEX 2024`.
+4. `↵` downloads (if needed), extracts, and opens the PDF.
+5. `⌘↵` saves the PDF to `~/Downloads` without opening it.
+6. `⌥↵` forces a cache refresh (the subtitle shows the current cache age).
+7. If the portal shows a check, a "Портал заблокировал запрос" row appears —
+   `↵` opens a real browser window to solve it once (`edisclosure arm`); the
+   armed session is shared with the CLI's other consumers.
 
-## Build the Bundle
+Listing is non-blocking: it serves cache-or-stale instantly and refreshes in a
+detached CLI worker, re-polling via Alfred's `rerun` until fresh data lands. The
+type-as-you-search path never opens a browser window on its own.
+
+## Environment
+
+All fetch/anti-bot configuration
+(`EDISCLOSURE_COOKIE` / `IMPERSONATE` / `ARM_TIMEOUT` / `CACHE_DIR`) is read by the
+CLI itself — the wrapper does not forward it. Set `EDISCLOSURE_DEBUG=1` to log the
+wrapper's CLI invocations to stderr.
+
+## Build
+
 ```bash
-chmod +x build_workflow.sh
 ./build_workflow.sh
 ```
-The script copies the Python sources, `tickers.csv`, and `info.plist` into `dist/workflow/` and zips everything into `dist/alfred-e-disclosure.alfredworkflow`.
 
-## Testing Tips
-- Run the unit suite with `pytest` (no network needed — page fetching is behind an injectable seam and the cache uses a temp dir).
-- Run `python3 list_reports.py msfo STSB | jq` to confirm listing works.
-- Select any emitted item, copy its JSON payload, and feed it to `open_report.py --payload ...` to ensure downloads and caching succeed.
-- If e-disclosure responds with bot protection, grab cookies from your browser’s dev tools and set `EDISCLOSURE_COOKIE` before re-running the scripts.
+Copies `list_reports.py`, `action.py`, `edisclosure_bin.py`,
+`relative_time_ru.py`, `info.plist`, and `icon.png` into `dist/workflow/` and zips
+them into `dist/alfred-e-disclosure.alfredworkflow`. No venv, no vendored `lib/`.
+
+## Layout
+
+- `list_reports.py` — Script Filter formatter: branches autocomplete vs listing,
+  calls the CLI, renders Alfred JSON.
+- `action.py` — action script: arm / force-refresh / download+open|save.
+- `edisclosure_bin.py` — locates the CLI and owns the "not installed" guard.
+- `relative_time_ru.py` — Russian relative-time formatter for the cache-age badge.
+- `info.plist` — workflow definition (3 Script Filters + 1 action).
+
+## Testing
+
+There are no automated tests in the workflow — it is a trivial JSON→Alfred
+reshape, and the heavy fetch/anti-bot/parser stack is tested in the CLI
+repository against its injectable fake backend. Verification is done live:
+
+- FAKE-smoke: drive the CLI's `EDISCLOSURE_FAKE_HTML_DIR` seed through the
+  formatter across the four statuses and eyeball the Alfred JSON.
+- Live run in Alfred: build, install, and exercise autocomplete → listing →
+  open → save, plus one challenge → arm.
