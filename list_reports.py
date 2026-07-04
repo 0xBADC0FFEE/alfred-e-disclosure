@@ -13,6 +13,7 @@ import csv
 import gzip
 import json
 import random
+import shutil
 import threading
 import urllib.request
 import urllib.response
@@ -126,6 +127,20 @@ def _is_challenge_page(html: str) -> bool:
     return any(marker in lowered for marker in _CHALLENGE_MARKERS)
 
 
+# ServicePipe's terminal 403 report page ("Forbidden … if you are not a bot,
+# please copy the report and send it to our support team"). Distinct from a
+# solvable challenge: no proof-of-work or captcha clears it — the profile's
+# ServicePipe session is blacklisted, and only a fresh profile recovers. Checked
+# before the challenge predicate because this page can carry challenge-ish words
+# (e.g. a robots NOINDEX) that would otherwise misclassify it as solvable.
+_HARD_BLOCK_MARKER = "if you are not a bot"
+
+
+def _is_hard_block(html: str) -> bool:
+    """True when ``html`` is ServicePipe's terminal 403 block (see marker above)."""
+    return bool(html) and _HARD_BLOCK_MARKER in html.lower()
+
+
 def _log(msg: str) -> None:
     print(f"[list_reports] {msg}", file=sys.stderr, flush=True)
 
@@ -236,9 +251,21 @@ def _stealthy_fetch_html(url: str) -> Optional[str]:
         if not proceed:
             return None
         try:
-            return _stealthy_arm(
+            html = _stealthy_arm(
                 url, headless=True, deadline_ms=HEADLESS_ARM_DEADLINE_MS
             )
+            if _is_hard_block(html):
+                # The profile's ServicePipe session is 403-blacklisted; no PoW
+                # clears it. Discard the poisoned profile now — the lock is held
+                # and _stealthy_arm has already closed the browser, so the
+                # user_data_dir is free to delete. Returning None falls back to
+                # the ordinary challenge page, so the next headed solve (or
+                # refresh) opens on a fresh profile. No in-call reopen: that
+                # would risk a wipe/reopen loop.
+                _log("hard-block 403 — wiping poisoned profile")
+                shutil.rmtree(_profile_dir(), ignore_errors=True)
+                return None
+            return html
         except BrowserMissingError as exc:
             if not _warned_stealthy_missing:
                 _log(f"stealth browser unavailable ({exc}) — run: scrapling install")

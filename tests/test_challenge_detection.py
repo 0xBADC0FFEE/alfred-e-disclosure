@@ -24,3 +24,21 @@ def test_large_non_files_page_without_robo_markers_is_not_challenge():
     # New heuristic ignores size: a big page lacking robo-check markers is not
     # treated as a challenge just for being unrecognised.
     assert list_reports._is_challenge_page("<html>" + "x" * 20000 + "</html>") is False
+
+
+# --- hard-block (terminal 403) predicate --------------------------------------
+
+def test_hard_block_fixture_is_hard_block(hard_block_html):
+    assert list_reports._is_hard_block(hard_block_html) is True
+
+
+def test_challenge_page_is_not_hard_block(challenge_html):
+    assert list_reports._is_hard_block(challenge_html) is False
+
+
+def test_normal_files_page_is_not_hard_block(normal_html):
+    assert list_reports._is_hard_block(normal_html) is False
+
+
+def test_empty_body_is_not_hard_block():
+    assert list_reports._is_hard_block("") is False
