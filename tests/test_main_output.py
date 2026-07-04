@@ -59,6 +59,23 @@ def test_challenge_without_prior_cache_is_terminal_error(monkeypatch):
     assert "заблокировал" in item["title"]
 
 
+def test_challenge_row_enter_arms_cmd_retries(monkeypatch):
+    # The block row repoints: ↵ opens the headed solve (arm), ⌘↵ resets the
+    # cache (retry). The ⌥ modifier is dropped so the two are unambiguous.
+    _seed_failure(Status.CHALLENGE, next_retry_at=datetime.now() + timedelta(hours=1))
+    data, _ = _run(monkeypatch, ["rsbu", TICKER])
+
+    item = data["items"][0]
+    enter = json.loads(item["arg"])
+    assert enter["arm"] is True
+    assert enter["ticker"] == TICKER
+    assert "force_refresh" not in enter
+
+    cmd = json.loads(item["mods"]["cmd"]["arg"])
+    assert cmd["force_refresh"] is True
+    assert "alt" not in item["mods"]
+
+
 def test_network_error_without_prior_cache_is_distinct_terminal_error(monkeypatch):
     _seed_failure(Status.ERROR, next_retry_at=datetime.now() + timedelta(hours=1))
     data, _ = _run(monkeypatch, ["rsbu", TICKER])

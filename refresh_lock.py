@@ -59,6 +59,24 @@ def is_refreshing(key: str) -> bool:
     return True
 
 
+def acquire(key: str, pid: int | None = None) -> bool:
+    """Claim the lock for an in-process holder (e.g. the human-arm solve).
+
+    Returns True if the key was free and is now held by ``pid`` (default: this
+    process). Mirrors ``spawn_refresh``'s no-double-spawn guard so a background
+    worker won't run while a human is solving the captcha.
+    """
+    if is_refreshing(key):
+        return False
+    if pid is None:
+        pid = os.getpid()
+    try:
+        _path(key).write_text(str(pid), encoding="utf-8")
+    except OSError:
+        return False
+    return True
+
+
 def spawn_refresh(key: str, argv: Sequence[str]) -> bool:
     """Spawn detached worker if none is live. Returns True if spawned."""
     if is_refreshing(key):

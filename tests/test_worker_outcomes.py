@@ -61,6 +61,23 @@ def test_empty_but_successful_fetch_still_writes_ok():
     assert env.items == []
 
 
+def test_armed_fetch_fills_cache_over_both_msfo_pages(normal_html):
+    # After a solve, run_refresh pulls with the armed session (Option B). МСФО
+    # reads both type=4 and type=3; the injected armed fetcher stands in for the
+    # armed curl_cffi and must produce an ok envelope covering both pages.
+    pages = []
+
+    def fetcher(company_id, doc_page_type):
+        pages.append(doc_page_type)
+        return normal_html
+
+    list_reports.run_refresh(TICKER, "МСФО", fetcher)
+
+    env = report_cache.read(TICKER, "МСФО")
+    assert env.status is Status.OK
+    assert sorted(pages) == [3, 4]
+
+
 def test_unknown_ticker_writes_error_envelope(normal_html):
     # An unknown ticker must resolve to an error outcome, not crash the worker
     # (load_company_id raises rather than sys.exit-ing).

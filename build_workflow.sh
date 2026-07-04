@@ -13,6 +13,7 @@ cp "$ROOT_DIR"/list_reports.py "$WORK_DIR"/
 cp "$ROOT_DIR"/open_report.py "$WORK_DIR"/
 cp "$ROOT_DIR"/save_report.py "$WORK_DIR"/
 cp "$ROOT_DIR"/report_cache.py "$WORK_DIR"/
+cp "$ROOT_DIR"/armed_cookies.py "$WORK_DIR"/
 cp "$ROOT_DIR"/refresh_lock.py "$WORK_DIR"/
 cp "$ROOT_DIR"/cache_dir.py "$WORK_DIR"/
 cp "$ROOT_DIR"/retry_policy.py "$WORK_DIR"/

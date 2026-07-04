@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 from urllib.parse import urljoin
 
+import armed_cookies
 import refresh_lock
 import relative_time_ru
 import report_cache
@@ -32,6 +33,30 @@ import retry_policy
 from report_cache import Status
 
 REFRESH_AGE_THRESHOLD_SECONDS = 3600
+
+# ServicePipe cookies set by challenge JS (not Set-Cookie). Harvested from the
+# browser context after a challenge clears, then handed off to curl_cffi.
+SERVICEPIPE_COOKIES = ("spsc", "spjs", "spid", "spca", "spcajs", "rndcaptcha")
+
+# The content marker whose appearance means the challenge is cleared.
+FILES_TABLE_SELECTOR = "table.files-table"
+
+# How long the arming browser waits for the table to appear (ms). The headed
+# solve gives the human minutes; the headless auto-arm only needs Flow A's PoW.
+ARM_DEADLINE_MS = 180_000
+HEADLESS_ARM_DEADLINE_MS = 20_000
+
+# Substrings that mark a "stealth browser binary is missing" failure (as opposed
+# to the scrapling package being absent), so we can point the user at
+# `scrapling install` instead of a cryptic launch error.
+_MISSING_BROWSER_MARKERS = (
+    "executable",
+    "doesn't exist",
+    "not found",
+    "no such file",
+    "camoufox",
+    "install",
+)
 
 try:
     from curl_cffi import requests as cf_requests  # type: ignore[import-not-found]
@@ -48,6 +73,10 @@ BASE_URL = "https://www.e-disclosure.ru/portal/"
 
 class ChallengeError(Exception):
     """Portal served an anti-bot challenge instead of the files table."""
+
+
+class BrowserMissingError(Exception):
+    """The stealth browser for the human-arm solve is not installed."""
 
 
 # Robo-check markers seen on ServicePipe block/CAPTCHA pages. Two forms are
@@ -81,30 +110,144 @@ def _log(msg: str) -> None:
     print(f"[list_reports] {msg}", file=sys.stderr, flush=True)
 
 
-def _stealthy_fetch_html(url: str) -> Optional[str]:
-    """Fallback fetch through Patchright-backed StealthyFetcher (lazy import)."""
-    global _warned_stealthy_missing
-    _log(f"stealthy import…")
+def _files_url(company_id: str, page_type: int) -> str:
+    """URL of a company's filings listing for one portal page type."""
+    return f"{BASE_URL}files.aspx?id={company_id}&type={page_type}"
+
+
+def _page_types(compact_type: str) -> Tuple[int, ...]:
+    """Portal page types to read for a compact doc type.
+
+    МСФО (IFRS) sometimes appears on the РСБУ page, so it reads both type=4 and
+    type=3; РСБУ reads only type=3. The first entry is the primary page used for
+    arming (one arm serves the whole origin anyway).
+    """
+    return (4, 3) if compact_type == "МСФО" else (3,)
+
+
+def _harvest_into(store: dict) -> Callable:
+    """Return a StealthyFetcher ``page_action`` that harvests ServicePipe cookies.
+
+    Reads the browser context's cookie jar (challenge JS sets the cookies there,
+    not via Set-Cookie) and copies the ServicePipe ones into ``store``.
+    """
+    def page_action(page):
+        try:
+            for cookie in page.context.cookies():
+                name = cookie.get("name")
+                if name in SERVICEPIPE_COOKIES:
+                    store[name] = cookie.get("value", "")
+        except Exception as exc:  # pragma: no cover - browser internals
+            _log(f"cookie harvest failed: {exc}")
+        return page
+
+    return page_action
+
+
+def _looks_like_missing_browser(exc: Exception) -> bool:
+    """Whether ``exc`` reads like a missing stealth-browser binary (vs a real fault)."""
+    msg = str(exc).lower()
+    return any(marker in msg for marker in _MISSING_BROWSER_MARKERS)
+
+
+def _stealthy_arm(url: str, *, headless: bool, deadline_ms: int) -> Tuple[str, dict]:
+    """Single arming machinery: fetch ``url`` in a StealthyFetcher browser, wait
+    for the ``files-table`` marker (challenge cleared), then harvest the armed
+    cookies. Differs only by the ``headless`` flag — headless auto-clears Flow A;
+    headed (``headless=False``) lets a human clear Flow B.
+
+    Returns ``(html, harvested_cookies)``. Cookies are harvested only once the
+    table appears, so a never-solved challenge yields an empty map. Raises
+    :class:`BrowserMissingError` when scrapling isn't installed or its browser
+    binary is missing.
+    """
     try:
         from scrapling.fetchers import StealthyFetcher  # type: ignore[import-not-found]
-    except ImportError:
+    except ImportError as exc:
+        raise BrowserMissingError(
+            "install: pip install 'scrapling[fetchers]' && scrapling install"
+        ) from exc
+
+    harvested: dict = {}
+    harvest = _harvest_into(harvested)
+
+    def solve(page):
+        # scrapling runs page_action *before* its own wait_selector, so block on
+        # the table here — keeping the window open while Flow A clears (or the
+        # human clears Flow B) — then harvest the now-armed cookies. A timeout
+        # raises, which scrapling swallows, leaving ``harvested`` empty.
+        page.wait_for_selector(FILES_TABLE_SELECTOR, timeout=deadline_ms)
+        return harvest(page)
+
+    _log(f"stealthy arm headless={headless} {url}")
+    try:
+        page = StealthyFetcher.fetch(
+            url,
+            headless=headless,
+            network_idle=True,
+            humanize=True,
+            spoof_fingerprint=True,
+            timeout=deadline_ms + 30_000,
+            page_action=solve,
+        )
+    except Exception as exc:  # noqa: BLE001
+        if _looks_like_missing_browser(exc):
+            raise BrowserMissingError(str(exc)) from exc
+        raise
+    html = getattr(page, "html_content", None) or getattr(page, "body", None) or ""
+    _log(f"stealthy arm done ({len(html)} bytes, {len(harvested)} cookies)")
+    return html, harvested
+
+
+def _stealthy_fetch_html(url: str) -> Optional[str]:
+    """Auto-arm fallback: headless StealthyFetcher clears Flow A by itself and
+    persists the armed cookies for a later curl_cffi refresh. Never raises — the
+    background refresh chain must degrade, not crash — so a missing browser just
+    returns ``None`` (warned once) and the caller serves stale/terminal state.
+    """
+    global _warned_stealthy_missing
+    try:
+        html, harvested = _stealthy_arm(
+            url, headless=True, deadline_ms=HEADLESS_ARM_DEADLINE_MS
+        )
+    except BrowserMissingError as exc:
         if not _warned_stealthy_missing:
-            _log("scrapling NOT installed — install: pip install 'scrapling[fetchers]' && scrapling install")
+            _log(f"stealth browser unavailable ({exc}) — run: scrapling install")
             _warned_stealthy_missing = True
         return None
-    _log(f"stealthy fetch {url}")
-    page = StealthyFetcher.fetch(
-        url,
-        headless=True,
-        network_idle=True,
-        wait=12000,
-        humanize=True,
-        spoof_fingerprint=True,
-        timeout=90000,
-    )
-    html = getattr(page, "html_content", None) or getattr(page, "body", None) or ""
-    _log(f"stealthy done ({len(html)} bytes)")
+    except Exception as exc:  # noqa: BLE001 - background path must not crash
+        _log(f"stealthy fetch failed: {exc}")
+        return None
+    if harvested:
+        armed_cookies.save(harvested)
+        _log(f"auto-armed {len(harvested)} cookies")
     return html
+
+
+def human_arm(ticker: str, compact_type: str) -> bool:
+    """Solve the challenge in a headed browser, then fill the cache via curl_cffi.
+
+    The browser only arms (harvests ServicePipe cookies); curl_cffi does the
+    fetching. Persists the harvested session, then runs a normal refresh over
+    both filing types — one solve arms the whole origin. Returns True on success.
+
+    Raises :class:`BrowserMissingError` when the stealth browser is unavailable.
+    """
+    company_id = load_company_id(ticker)
+    page_type = _page_types(compact_type)[0]
+    url = _files_url(company_id, page_type)
+
+    _log(f"headed solve {url}")
+    _, cookies = _stealthy_arm(url, headless=False, deadline_ms=ARM_DEADLINE_MS)
+    if not cookies:
+        return False
+    armed_cookies.save(cookies)
+    _log(f"armed {ticker}/{compact_type}: {sorted(cookies)}")
+
+    # One arm serves both МСФО and РСБУ, so refill both caches now.
+    for ct in ("МСФО", "РСБУ"):
+        run_refresh(ticker, ct)
+    return True
 
 
 @dataclass
@@ -362,8 +505,23 @@ def search_tickers(query: str, all_tickers: List[Tuple[str, str, str]]) -> List[
     return [ticker for ticker in all_tickers if ticker[0].startswith(query_up)]
 
 
+def _resolve_cookie_header() -> Optional[str]:
+    """Cookie header for the fetching surface: manual override wins over armed.
+
+    ``EDISCLOSURE_COOKIE`` stays a manual override; absent that, the armed store
+    (harvested from a solved challenge) supplies the ServicePipe cookies.
+    """
+    override = os.getenv("EDISCLOSURE_COOKIE")
+    if override:
+        return override
+    armed = armed_cookies.load()
+    if armed:
+        return "; ".join(f"{name}={value}" for name, value in armed.items())
+    return None
+
+
 def fetch_table_html(company_id: str, doc_page_type: int) -> str:
-    url = f"{BASE_URL}files.aspx?id={company_id}&type={doc_page_type}"
+    url = _files_url(company_id, doc_page_type)
     # e-disclosure may return anti-bot/captcha pages to non-browser clients.
     # We try to mimic a browser as much as possible and, optionally, allow the
     # user to pass real browser cookies via the EDISCLOSURE_COOKIE env var.
@@ -394,7 +552,7 @@ def fetch_table_html(company_id: str, doc_page_type: int) -> str:
         "sec-ch-ua-mobile": "?0",
         'sec-ch-ua-platform': '"macOS"',
     }
-    cookie = os.getenv("EDISCLOSURE_COOKIE")
+    cookie = _resolve_cookie_header()
     if cookie:
         headers["Cookie"] = cookie
 
@@ -455,10 +613,7 @@ def collect_documents(
     """
     docs: List[Document] = []
 
-    if wanted_compact_type == "МСФО":
-        page_types = (4, 3)
-    else:
-        page_types = (3,)
+    page_types = _page_types(wanted_compact_type)
 
     _log(f"collect id={company_id} types={page_types}")
     if len(page_types) > 1:
@@ -527,7 +682,7 @@ def docs_to_cache_items(docs: List[Document]) -> List[dict]:
     ]
 
 
-def _refresh_key(ticker: str, doc_type: str) -> str:
+def refresh_key(ticker: str, doc_type: str) -> str:
     return f"{ticker.upper()}_{doc_type}"
 
 
@@ -762,7 +917,7 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     now = datetime.now()
     env = report_cache.read(ticker, compact_type)
-    key = _refresh_key(ticker, compact_type)
+    key = refresh_key(ticker, compact_type)
 
     if _should_spawn(env, now):
         spawn_argv = _refresh_worker_argv(args.command, ticker, compact_type)
@@ -867,38 +1022,42 @@ def _stale_badge_item(cache_age_label: str) -> dict:
 def _build_error_item(ticker: str, status: Status, doc_type: str) -> dict:
     """Terminal error row (no ``rerun``) distinguishing block from network fault.
 
-    ↵ / ⌥↵ carries ``force_refresh`` so the user can force a fresh attempt: the
-    open handler clears the cache, and the next tick re-spawns a worker.
+    On a **challenge** the block is a captcha a human can clear: ↵ opens a headed
+    browser to solve it (arm); ⌘↵ falls back to the cache-reset retry. On a plain
+    network **error** both ↵ and ⌘↵ carry ``force_refresh`` (reset + retry).
     """
+    ticker_up = ticker.upper()
+    retry_arg = json.dumps(
+        {"ticker": ticker_up, "doc_type": doc_type, "force_refresh": True},
+        ensure_ascii=False,
+    )
+    retry_mod = {
+        "arg": retry_arg,
+        "subtitle": "↻ Сбросить кэш и попробовать снова",
+        "valid": True,
+    }
+
     if status is Status.CHALLENGE:
-        title = f"Портал заблокировал запрос — {ticker.upper()}"
-        subtitle = "e-disclosure.ru показал проверку. ↵ или ⌥↵ — попробовать снова."
+        arm_arg = json.dumps(
+            {"ticker": ticker_up, "doc_type": doc_type, "arm": True},
+            ensure_ascii=False,
+        )
+        item = {
+            "title": f"Портал заблокировал запрос — {ticker_up}",
+            "subtitle": "e-disclosure.ru показал проверку. ↵ — пройти проверку в браузере · ⌘↵ — сбросить кэш.",
+            "arg": arm_arg,
+            "valid": True,
+            "mods": {"cmd": retry_mod},
+        }
     else:
-        title = f"Не удалось загрузить отчёты — {ticker.upper()}"
-        subtitle = "Сетевая ошибка. ↵ или ⌥↵ — попробовать снова."
-    refresh_payload = {
-        "ticker": ticker.upper(),
-        "doc_type": doc_type,
-        "force_refresh": True,
-    }
-    arg = json.dumps(refresh_payload, ensure_ascii=False)
-    return {
-        "items": [
-            {
-                "title": title,
-                "subtitle": subtitle,
-                "arg": arg,
-                "valid": True,
-                "mods": {
-                    "alt": {
-                        "arg": arg,
-                        "subtitle": "↻ Сбросить кэш и попробовать снова",
-                        "valid": True,
-                    }
-                },
-            }
-        ]
-    }
+        item = {
+            "title": f"Не удалось загрузить отчёты — {ticker_up}",
+            "subtitle": "Сетевая ошибка. ↵ или ⌘↵ — попробовать снова.",
+            "arg": retry_arg,
+            "valid": True,
+            "mods": {"cmd": retry_mod},
+        }
+    return {"items": [item]}
 
 
 def _record_failure(
@@ -929,7 +1088,7 @@ def _run_refresh_worker(args: argparse.Namespace) -> None:
         _log("refresh: ticker required")
         return
     compact_type = "МСФО" if args.command == "msfo" else "РСБУ"
-    key = _refresh_key(ticker, compact_type)
+    key = refresh_key(ticker, compact_type)
     pid = os.getpid()
     try:
         run_refresh(ticker, compact_type)

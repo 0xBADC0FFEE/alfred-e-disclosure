@@ -17,13 +17,14 @@ import argparse
 import json
 import shutil
 import subprocess
-import sys
 import urllib.request
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional
 
+import list_reports
+import refresh_lock
 import report_cache
 
 try:
@@ -61,6 +62,7 @@ class ReportPayload:
     size: str = ""
     save_to_downloads: bool = False
     force_refresh: bool = False
+    arm: bool = False
 
     @property
     def base_name(self) -> str:
@@ -112,7 +114,11 @@ def load_payload(args: argparse.Namespace) -> ReportPayload:
             "doc_type_raw": args.doc_type_raw,
         }
     force_refresh = bool(data.get("force_refresh"))
-    required = ("ticker", "doc_type") if force_refresh else ("ticker", "url", "period", "doc_type", "publish_date")
+    arm = bool(data.get("arm"))
+    if arm or force_refresh:
+        required = ("ticker", "doc_type")
+    else:
+        required = ("ticker", "url", "period", "doc_type", "publish_date")
     missing = [key for key in required if not data.get(key)]
     if missing:
         raise ValueError(f"Missing payload fields: {', '.join(missing)}")
@@ -128,6 +134,7 @@ def load_payload(args: argparse.Namespace) -> ReportPayload:
         size=data.get("size", ""),
         save_to_downloads=bool(data.get("save_to_downloads")),
         force_refresh=force_refresh,
+        arm=arm,
     )
 
 
@@ -341,10 +348,40 @@ def save_pdf_to_downloads(pdf_path: Path, payload: ReportPayload) -> Path:
     return destination
 
 
+def run_arm(payload: ReportPayload) -> int:
+    """Human-arm: solve the challenge in a headed browser, then fill the cache.
+
+    Holds the refresh lock for the duration so the background worker can't race
+    the solve (which may take minutes while the human works).
+    """
+    key = list_reports.refresh_key(payload.ticker, payload.doc_type)
+    if not refresh_lock.acquire(key):
+        print("Обновление уже идёт — подождите и повторите вызов.")
+        return 0
+    try:
+        solved = list_reports.human_arm(payload.ticker, payload.doc_type)
+    except list_reports.BrowserMissingError as exc:
+        print(
+            f"Нужен браузер для проверки. Выполните: scrapling install ({exc})",
+            file=sys.stderr,
+        )
+        return 1
+    finally:
+        refresh_lock.release(key, os.getpid())
+
+    if solved:
+        print(f"Проверка пройдена — отчёты обновлены для {payload.ticker.upper()}")
+        return 0
+    print("Не удалось пройти проверку. Повторите попытку.", file=sys.stderr)
+    return 1
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     try:
         args = parse_args(argv)
         payload = load_payload(args)
+        if payload.arm:
+            return run_arm(payload)
         if payload.force_refresh:
             report_cache.delete(payload.ticker, payload.doc_type)
             print(f"Cache invalidated for {payload.ticker.upper()}/{payload.doc_type}")
