@@ -8,8 +8,9 @@ thin payload the formatter built:
   check (blocking); it refills the shared cache.
 - ``force_refresh`` → ``edisclosure list --force-refresh --async``: kick a fresh
   background refresh (the "reset and retry" on a challenge/error row).
-- otherwise (a report row) → ``edisclosure download --url``: take ``pdfs[0]`` and
-  ``open`` it, or ``cp`` it to ``~/Downloads`` when the ⌘ payload set ``save``.
+- otherwise (a report row) → ``edisclosure download --url``: take every path in
+  ``pdfs`` and ``open`` them, or ``cp`` them to ``~/Downloads`` when the ⌘ payload
+  set ``save``. An archive may hold several independent documents.
 """
 from __future__ import annotations
 
@@ -73,20 +74,17 @@ def _force_refresh(cli: str, ticker: str, standard: str) -> int:
 
 
 def _download(cli: str, ticker: str, standard: str, url: str, save: bool) -> int:
-    pdf = _staged_pdf(cli, ticker, standard, url)
-    if save:
-        dest = Path.home() / "Downloads" / pdf.name
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(pdf, dest)
-        print(f"Сохранено: {dest}")
-    else:
-        subprocess.run(["open", str(pdf)], check=False)
-        print(f"Открыто: {pdf}")
+    pdfs = _staged_pdfs(cli, ticker, standard, url)
+    print(_save_all(pdfs) if save else _open_all(pdfs))
     return 0
 
 
-def _staged_pdf(cli: str, ticker: str, standard: str, url: str) -> Path:
-    """Download+extract via the CLI and return the staged PDF path."""
+def _staged_pdfs(cli: str, ticker: str, standard: str, url: str) -> List[Path]:
+    """Download+extract via the CLI and return every staged PDF path.
+
+    Always a list, sorted by the CLI as the archive ordered its members — a
+    single-PDF report yields a one-element list.
+    """
     if not url:
         raise ValueError("payload без url")
     edisclosure_bin.debug("action", f"download {ticker} {standard} {url}")
@@ -104,7 +102,50 @@ def _staged_pdf(cli: str, ticker: str, standard: str, url: str) -> Path:
     pdfs = out.get("pdfs") or []
     if out.get("status") != "ok" or not pdfs:
         raise RuntimeError(f"Скачивание не удалось (статус {out.get('status')})")
-    return Path(pdfs[0])
+    return [Path(p) for p in pdfs]
+
+
+def _open_all(pdfs: List[Path]) -> str:
+    """Open every document, leaving the first one frontmost, and report the result.
+
+    macOS stacks the last opened window on top, so the list is walked backwards.
+    A failing ``open`` does not stop the rest.
+    """
+    for pdf in reversed(pdfs):
+        subprocess.run(["open", str(pdf)], check=False)
+    if len(pdfs) == 1:
+        return f"Открыто: {pdfs[0]}"
+    return f"Открыто {_files_ru(len(pdfs))}, первый: {pdfs[0].name}"
+
+
+def _save_all(pdfs: List[Path]) -> str:
+    """Copy every document into ``~/Downloads`` and report the result.
+
+    Stops at the first refusal, naming the file it fell on; whatever was copied
+    before that stays on disk.
+    """
+    downloads = Path.home() / "Downloads"
+    downloads.mkdir(parents=True, exist_ok=True)
+    for pdf in pdfs:
+        try:
+            shutil.copy2(pdf, downloads / pdf.name)
+        except OSError as exc:
+            raise RuntimeError(f"Не удалось сохранить {pdf.name}: {exc}") from exc
+    if len(pdfs) == 1:
+        return f"Сохранено: {downloads / pdfs[0].name}"
+    return f"Сохранено {_files_ru(len(pdfs))} в {downloads}, первый: {pdfs[0].name}"
+
+
+def _files_ru(count: int) -> str:
+    """Count with the Russian plural form of "файл" ("3 файла")."""
+    tail, tens = count % 10, count % 100
+    if tail == 1 and tens != 11:
+        noun = "файл"
+    elif tail in (2, 3, 4) and tens not in (12, 13, 14):
+        noun = "файла"
+    else:
+        noun = "файлов"
+    return f"{count} {noun}"
 
 
 if __name__ == "__main__":

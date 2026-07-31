@@ -29,8 +29,11 @@ its own — it shells out to the CLI and reshapes its JSON into Alfred rows.
    - `annual TICKER [PERIOD]` — annual reports
 3. A bare ticker prefix autocompletes matching companies; add a space (or a
    period) to list reports, e.g. `msfo LKOH` or `rsbu MOEX 2024`.
-4. `↵` downloads (if needed), extracts, and opens the PDF.
-5. `⌘↵` saves the PDF to `~/Downloads` without opening it.
+4. `↵` downloads (if needed), extracts, and opens the PDF — every PDF, when the
+   report is published as an archive of several documents, with the first one
+   frontmost.
+5. `⌘↵` saves the PDF (all of them, for a multi-document archive) to `~/Downloads`
+   without opening it.
 6. `⌥↵` forces a cache refresh (the subtitle shows the current cache age).
 7. If the portal shows a check, a "Портал заблокировал запрос" row appears —
    `↵` opens a real browser window to solve it once (`edisclosure arm`); the

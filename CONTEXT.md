@@ -35,8 +35,14 @@ The selected row's payload drives `action.py`:
 
 - `{arm}` → `edisclosure arm` (headed human solve).
 - `{force_refresh}` → `edisclosure list --force-refresh --async` (fresh worker).
-- `{ticker, standard, url}` → `edisclosure download --url` → `pdfs[0]` → `open`
-  (or `cp ~/Downloads` when `⌘` set `save`).
+- `{ticker, standard, url}` → `edisclosure download --url` → every path in `pdfs`
+  → `open` (or `cp ~/Downloads` when `⌘` set `save`).
+
+The `download` envelope is `{status, pdfs}`; `pdfs` is always a list, because one
+listing row is one archive URL and an archive may hold several independent
+documents. `status != "ok"` or an empty `pdfs` is an error. Opening walks the list
+backwards so the first document — the emitter's own ordering, our only priority
+signal — ends up frontmost. Saving stops at the first refusal, naming the file.
 
 ## Field-name bridge
 
