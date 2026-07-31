@@ -42,7 +42,8 @@ The `download` envelope is `{status, pdfs}`; `pdfs` is always a list, because on
 listing row is one archive URL and an archive may hold several independent
 documents. `status != "ok"` or an empty `pdfs` is an error. Opening walks the list
 backwards so the first document — the emitter's own ordering, our only priority
-signal — ends up frontmost. Saving stops at the first refusal, naming the file.
+signal — ends up frontmost. Saving aborts on the first refusal, naming the file;
+what was already copied stays in `~/Downloads`.
 
 ## Field-name bridge
 

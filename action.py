@@ -75,7 +75,10 @@ def _force_refresh(cli: str, ticker: str, standard: str) -> int:
 
 def _download(cli: str, ticker: str, standard: str, url: str, save: bool) -> int:
     pdfs = _staged_pdfs(cli, ticker, standard, url)
-    print(_save_all(pdfs) if save else _open_all(pdfs))
+    if save:
+        _save_all(pdfs)
+    else:
+        _open_all(pdfs)
     return 0
 
 
@@ -105,8 +108,8 @@ def _staged_pdfs(cli: str, ticker: str, standard: str, url: str) -> List[Path]:
     return [Path(p) for p in pdfs]
 
 
-def _open_all(pdfs: List[Path]) -> str:
-    """Open every document, leaving the first one frontmost, and report the result.
+def _open_all(pdfs: List[Path]) -> None:
+    """Open every document, leaving the first one frontmost, and print the notification.
 
     macOS stacks the last opened window on top, so the list is walked backwards.
     A failing ``open`` does not stop the rest.
@@ -114,15 +117,16 @@ def _open_all(pdfs: List[Path]) -> str:
     for pdf in reversed(pdfs):
         subprocess.run(["open", str(pdf)], check=False)
     if len(pdfs) == 1:
-        return f"Открыто: {pdfs[0]}"
-    return f"Открыто {_files_ru(len(pdfs))}, первый: {pdfs[0].name}"
+        print(f"Открыто: {pdfs[0]}")
+    else:
+        print(f"Открыто {_files_ru(len(pdfs))}, первый: {pdfs[0].name}")
 
 
-def _save_all(pdfs: List[Path]) -> str:
-    """Copy every document into ``~/Downloads`` and report the result.
+def _save_all(pdfs: List[Path]) -> None:
+    """Copy every document into ``~/Downloads`` and print the notification.
 
-    Stops at the first refusal, naming the file it fell on; whatever was copied
-    before that stays on disk.
+    Raises ``RuntimeError`` naming the file the first refusal fell on; whatever
+    was copied before that stays on disk.
     """
     downloads = Path.home() / "Downloads"
     downloads.mkdir(parents=True, exist_ok=True)
@@ -132,8 +136,9 @@ def _save_all(pdfs: List[Path]) -> str:
         except OSError as exc:
             raise RuntimeError(f"Не удалось сохранить {pdf.name}: {exc}") from exc
     if len(pdfs) == 1:
-        return f"Сохранено: {downloads / pdfs[0].name}"
-    return f"Сохранено {_files_ru(len(pdfs))} в {downloads}, первый: {pdfs[0].name}"
+        print(f"Сохранено: {downloads / pdfs[0].name}")
+    else:
+        print(f"Сохранено {_files_ru(len(pdfs))} в {downloads}, первый: {pdfs[0].name}")
 
 
 def _files_ru(count: int) -> str:
