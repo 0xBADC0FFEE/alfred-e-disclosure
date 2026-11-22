@@ -29,6 +29,9 @@ The `list --async` envelope is `{status, ticker, standard, fetched_at, items}`.
 | `challenge` | "пройти проверку" row (↵ → `arm`) above the saved rows                    | —     |
 | `error`     | "сбросить и повторить" row (↵/⌥↵ → force refresh) above the saved rows    | —     |
 
+When a status yields no rows of its own, its placeholder stays actionable: ↵ and
+⌥↵ both send `{force_refresh}`.
+
 ## Actions
 
 The selected row's payload drives `action.py`:

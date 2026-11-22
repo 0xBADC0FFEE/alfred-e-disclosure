@@ -107,6 +107,19 @@
         <false/>
       </dict>
     </array>
+    <key>E07DD2CC-0BA2-4E6D-9EAB-6F5CF66DA709</key>
+    <array>
+      <dict>
+        <key>destinationuid</key>
+        <string>F1A2B3C4-5D6E-4F70-8192-A3B4C5D6E7F8</string>
+        <key>modifiers</key>
+        <integer>0</integer>
+        <key>modifiersubtext</key>
+        <string></string>
+        <key>vitocloseworkflow</key>
+        <false/>
+      </dict>
+    </array>
   </dict>
   <key>createdby</key>
   <string>vawerv</string>
@@ -274,6 +287,31 @@
       <key>version</key>
       <integer>1</integer>
     </dict>
+    <dict>
+      <key>config</key>
+      <dict>
+        <key>lastpathcomponent</key>
+        <false/>
+        <key>onlyshowifquerypopulated</key>
+        <true/>
+        <key>output</key>
+        <integer>0</integer>
+        <key>removeextension</key>
+        <false/>
+        <key>sticky</key>
+        <false/>
+        <key>text</key>
+        <string>{query}</string>
+        <key>title</key>
+        <string>e-Disclosure</string>
+      </dict>
+      <key>type</key>
+      <string>alfred.workflow.output.notification</string>
+      <key>uid</key>
+      <string>F1A2B3C4-5D6E-4F70-8192-A3B4C5D6E7F8</string>
+      <key>version</key>
+      <integer>1</integer>
+    </dict>
   </array>
   <key>readme</key>
   <string>Keywords:
@@ -315,9 +353,16 @@ and open the PDF; ⌘↵ saves it to ~/Downloads.
       <key>ypos</key>
       <integer>150</integer>
     </dict>
+    <key>F1A2B3C4-5D6E-4F70-8192-A3B4C5D6E7F8</key>
+    <dict>
+      <key>xpos</key>
+      <integer>700</integer>
+      <key>ypos</key>
+      <integer>150</integer>
+    </dict>
   </dict>
   <key>version</key>
-  <string>2.0.1</string>
+  <string>2.0.2</string>
   <key>webaddress</key>
   <string>https://www.e-disclosure.ru/portal/</string>
 </dict>

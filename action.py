@@ -32,14 +32,12 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     cli = edisclosure_bin.resolve()
     if cli is None:
-        print(f"{edisclosure_bin.NOT_INSTALLED_TITLE}. {edisclosure_bin.NOT_INSTALLED_SUBTITLE}", file=sys.stderr)
-        return 1
+        return _fail(f"{edisclosure_bin.NOT_INSTALLED_TITLE}. {edisclosure_bin.NOT_INSTALLED_SUBTITLE}")
 
     try:
         payload = json.loads(args.payload)
     except (json.JSONDecodeError, ValueError) as exc:
-        print(f"Некорректный payload: {exc}", file=sys.stderr)
-        return 1
+        return _fail(f"Некорректный payload: {exc}")
 
     ticker = payload.get("ticker", "")
     standard = payload.get("standard", "msfo")
@@ -52,14 +50,29 @@ def main(argv: Optional[List[str]] = None) -> int:
     except KeyboardInterrupt:  # pragma: no cover - manual interruption
         return 130
     except Exception as exc:  # pragma: no cover - user feedback
-        print(f"Ошибка: {exc}", file=sys.stderr)
-        return 1
+        return _fail(f"Ошибка: {exc}")
+
+
+def _fail(message: str) -> int:
+    print(message)
+    print(message, file=sys.stderr)
+    return 1
 
 
 def _arm(cli: str, ticker: str, standard: str) -> int:
     """Hand the terminal to a headed solve; the CLI blocks until human or timeout."""
     edisclosure_bin.debug("action", f"arm {ticker} {standard}")
-    return subprocess.run([cli, "arm", ticker, "--standard", standard]).returncode
+    proc = subprocess.run(
+        [cli, "arm", ticker, "--standard", standard, "--format", "json"],
+        capture_output=True,
+        text=True,
+    )
+    if proc.stderr:
+        edisclosure_bin.debug("action", proc.stderr.strip())
+    if proc.returncode == 0:
+        print("Проверка пройдена — откройте список снова.")
+        return 0
+    return _fail("Проверка не пройдена — попробуйте ещё раз.")
 
 
 def _force_refresh(cli: str, ticker: str, standard: str) -> int:
@@ -69,7 +82,7 @@ def _force_refresh(cli: str, ticker: str, standard: str) -> int:
         [cli, "list", ticker, "--standard", standard, "--force-refresh", "--async", "--format", "json"],
         capture_output=True,
     )
-    print(f"Обновляем {ticker.upper()}…")
+    print(f"Кэш сброшен — обновляем {ticker.upper()}…")
     return 0
 
 

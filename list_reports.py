@@ -61,10 +61,13 @@ def render(
     rows = _report_rows(envelope.get("items", []), standard, ticker, age_label, period_filter)
 
     if status == STATUS_OK:
-        return {"items": rows or [_no_reports_item(ticker, period_filter)]}
+        return {"items": rows or [_no_reports_item(ticker, standard, period_filter)]}
 
     if status == STATUS_STALE:
-        return {"items": rows or [_updating_item(ticker)], "rerun": _RERUN_SECONDS}
+        return {
+            "items": rows or [_updating_item(ticker, standard)],
+            "rerun": _RERUN_SECONDS,
+        }
 
     banner = (
         _challenge_item(ticker, standard)
@@ -143,11 +146,7 @@ def _report_row(
                 "subtitle": "Сохранить в ~/Downloads",
                 "valid": True,
             },
-            "alt": {
-                "arg": _payload(ticker, standard, force_refresh=True),
-                "subtitle": refresh_subtitle,
-                "valid": True,
-            },
+            "alt": _alt_refresh(_payload(ticker, standard, force_refresh=True), refresh_subtitle),
         },
     }
 
@@ -161,6 +160,10 @@ def _challenge_item(ticker: str, standard: str) -> dict:
     }
 
 
+def _alt_refresh(retry: str, subtitle: str) -> dict:
+    return {"arg": retry, "subtitle": subtitle, "valid": True}
+
+
 def _error_item(ticker: str, standard: str) -> dict:
     retry = _payload(ticker, standard, force_refresh=True)
     return {
@@ -168,21 +171,31 @@ def _error_item(ticker: str, standard: str) -> dict:
         "subtitle": "↵ или ⌥↵ — сбросить кэш и попробовать снова.",
         "arg": retry,
         "valid": True,
-        "mods": {"alt": {"arg": retry, "subtitle": "↻ Сбросить кэш и попробовать снова", "valid": True}},
+        "mods": {"alt": _alt_refresh(retry, "↻ Сбросить кэш и попробовать снова")},
     }
 
 
-def _updating_item(ticker: str) -> dict:
+def _updating_item(ticker: str, standard: str) -> dict:
+    retry = _payload(ticker, standard, force_refresh=True)
     return {
         "title": f"Обновляем для {ticker}…",
-        "subtitle": "Загружаем отчёты с e-disclosure.ru",
-        "valid": False,
+        "subtitle": "Загружаем отчёты с e-disclosure.ru. ↵ — не ждать и обновить сейчас.",
+        "arg": retry,
+        "valid": True,
+        "mods": {"alt": _alt_refresh(retry, "↻ Сбросить кэш и обновить сейчас")},
     }
 
 
-def _no_reports_item(ticker: str, period_filter: Optional[str]) -> dict:
+def _no_reports_item(ticker: str, standard: str, period_filter: Optional[str]) -> dict:
     detail = "Нет отчётов по фильтру" if (period_filter or "").strip() else "Отчёты не найдены"
-    return {"title": detail, "subtitle": f"{ticker} — другой период или команда.", "valid": False}
+    retry = _payload(ticker, standard, force_refresh=True)
+    return {
+        "title": detail,
+        "subtitle": f"{ticker} — ↵ или ⌥↵ — сбросить кэш, либо другой период или команда.",
+        "arg": retry,
+        "valid": True,
+        "mods": {"alt": _alt_refresh(retry, "↻ Сбросить кэш и обновить")},
+    }
 
 
 def _fmt_date(iso: str) -> str:

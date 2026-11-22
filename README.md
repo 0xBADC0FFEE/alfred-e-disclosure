@@ -34,7 +34,9 @@ its own — it shells out to the CLI and reshapes its JSON into Alfred rows.
    frontmost.
 5. `⌘↵` saves the PDF (all of them, for a multi-document archive) to `~/Downloads`
    without opening it.
-6. `⌥↵` forces a cache refresh (the subtitle shows the current cache age).
+6. `⌥↵` forces a cache refresh (the subtitle shows the current cache age) and
+   posts a notification when the refresh is kicked off; the same key works on
+   the "no reports" / "updating" placeholder rows.
 7. If the portal shows a check, a "Портал заблокировал запрос" row appears —
    `↵` opens a real browser window to solve it once (`edisclosure arm`); the
    armed session is shared with the CLI's other consumers.
