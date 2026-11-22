@@ -37,7 +37,9 @@ When a status yields no rows of its own, its placeholder stays actionable: ↵ a
 The selected row's payload drives `action.py`:
 
 - `{arm}` → `edisclosure arm` (headed human solve).
-- `{force_refresh}` → `edisclosure list --force-refresh --async` (fresh worker).
+- `{force_refresh}` → `edisclosure list --force-refresh` spawned detached: the
+  blocking verb escalates to a headed captcha solve; the workflow returns
+  at once (the browser window is the progress signal).
 - `{ticker, standard, url}` → `edisclosure download --url` → every path in `pdfs`
   → `open` (or `cp ~/Downloads` when `⌘` set `save`).
 

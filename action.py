@@ -6,8 +6,9 @@ thin payload the formatter built:
 
 - ``arm``  → ``edisclosure arm``: open a headed window for the human to solve the
   check (blocking); it refills the shared cache.
-- ``force_refresh`` → ``edisclosure list --force-refresh --async``: kick a fresh
-  background refresh (the "reset and retry" on a challenge/error row).
+- ``force_refresh`` → ``edisclosure list --force-refresh`` behind a detached
+  process: the blocking verb is the one that escalates to a headed captcha solve,
+  and detaching keeps Alfred from waiting on it.
 - otherwise (a report row) → ``edisclosure download --url``: take every path in
   ``pdfs`` and ``open`` them, or ``cp`` them to ``~/Downloads`` when the ⌘ payload
   set ``save``. An archive may hold several independent documents.
@@ -76,11 +77,18 @@ def _arm(cli: str, ticker: str, standard: str) -> int:
 
 
 def _force_refresh(cli: str, ticker: str, standard: str) -> int:
-    """Bypass the cache and spawn a fresh detached refresh, then hand back at once."""
+    """Bypass the cache and hand the refresh to a detached blocking run of the CLI.
+
+    The blocking verb is the one that escalates to a headed human solve when the
+    portal demands a captcha; the async worker stops at the wall. Detaching keeps
+    Alfred snappy — the browser window, when it appears, is the progress signal."""
     edisclosure_bin.debug("action", f"force-refresh {ticker} {standard}")
-    subprocess.run(
-        [cli, "list", ticker, "--standard", standard, "--force-refresh", "--async", "--format", "json"],
-        capture_output=True,
+    subprocess.Popen(
+        [cli, "list", ticker, "--standard", standard, "--force-refresh", "--format", "json"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
     )
     print(f"Кэш сброшен — обновляем {ticker.upper()}…")
     return 0
