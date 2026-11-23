@@ -34,9 +34,9 @@ its own — it shells out to the CLI and reshapes its JSON into Alfred rows.
    frontmost.
 5. `⌘↵` saves the PDF (all of them, for a multi-document archive) to `~/Downloads`
    without opening it.
-6. `⌥↵` forces a cache refresh (the subtitle shows the current cache age) and
-   posts a notification when it is kicked off; the same key works on the
-   "no reports" / "updating" placeholder rows. The refresh runs the CLI's blocking
+6. `⌥↵` forces a cache refresh (the subtitle shows the current cache age); the
+   same key works on the "no reports" / "updating" placeholder rows. The refresh
+   runs the CLI's blocking
    verb in the background, so a portal captcha opens a browser window to solve
    instead of leaving the cache parked on `challenge`.
 7. If the portal shows a check, a "Портал заблокировал запрос" row appears —

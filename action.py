@@ -55,7 +55,6 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 
 def _fail(message: str) -> int:
-    print(message)
     print(message, file=sys.stderr)
     return 1
 
@@ -71,7 +70,6 @@ def _arm(cli: str, ticker: str, standard: str) -> int:
     if proc.stderr:
         edisclosure_bin.debug("action", proc.stderr.strip())
     if proc.returncode == 0:
-        print("Проверка пройдена — откройте список снова.")
         return 0
     return _fail("Проверка не пройдена — попробуйте ещё раз.")
 
@@ -90,7 +88,6 @@ def _force_refresh(cli: str, ticker: str, standard: str) -> int:
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
-    print(f"Кэш сброшен — обновляем {ticker.upper()}…")
     return 0
 
 
@@ -130,21 +127,17 @@ def _staged_pdfs(cli: str, ticker: str, standard: str, url: str) -> List[Path]:
 
 
 def _open_all(pdfs: List[Path]) -> None:
-    """Open every document, leaving the first one frontmost, and print the notification.
+    """Open every document, leaving the first one frontmost.
 
     macOS stacks the last opened window on top, so the list is walked backwards.
     A failing ``open`` does not stop the rest.
     """
     for pdf in reversed(pdfs):
         subprocess.run(["open", str(pdf)], check=False)
-    if len(pdfs) == 1:
-        print(f"Открыто: {pdfs[0]}")
-    else:
-        print(f"Открыто {_files_ru(len(pdfs))}, первый: {pdfs[0].name}")
 
 
 def _save_all(pdfs: List[Path]) -> None:
-    """Copy every document into ``~/Downloads`` and print the notification.
+    """Copy every document into ``~/Downloads``.
 
     Raises ``RuntimeError`` naming the file the first refusal fell on; whatever
     was copied before that stays on disk.
@@ -156,22 +149,6 @@ def _save_all(pdfs: List[Path]) -> None:
             shutil.copy2(pdf, downloads / pdf.name)
         except OSError as exc:
             raise RuntimeError(f"Не удалось сохранить {pdf.name}: {exc}") from exc
-    if len(pdfs) == 1:
-        print(f"Сохранено: {downloads / pdfs[0].name}")
-    else:
-        print(f"Сохранено {_files_ru(len(pdfs))} в {downloads}, первый: {pdfs[0].name}")
-
-
-def _files_ru(count: int) -> str:
-    """Count with the Russian plural form of "файл" ("3 файла")."""
-    tail, tens = count % 10, count % 100
-    if tail == 1 and tens != 11:
-        noun = "файл"
-    elif tail in (2, 3, 4) and tens not in (12, 13, 14):
-        noun = "файла"
-    else:
-        noun = "файлов"
-    return f"{count} {noun}"
 
 
 if __name__ == "__main__":
